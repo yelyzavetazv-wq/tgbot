@@ -216,20 +216,104 @@ def webhook():
                 return 'OK', 200
 
             if update.message.document:
-                bot.send_message(chat_id, "📦 Получил архив, обрабатываю...")
+                # Прогресс-бар
+                status_msg = bot.send_message(chat_id, "⏳ [░░░░░░░░░░] 0% - Начинаю...")
+                
+                # Шаг 1: Скачивание (20%)
+                bot.edit_message_text("⏳ [▓▓░░░░░░░░] 20% - Скачиваю...", chat_id, status_msg.message_id)
                 file_info = bot.get_file(update.message.document.file_id)
                 file_content = bot.download_file(file_info.file_path)
+                
+                # Шаг 2: Сохранение (40%)
+                bot.edit_message_text("⏳ [▓▓▓▓░░░░░░] 40% - Сохраняю...", chat_id, status_msg.message_id)
                 zip_path = f"/tmp/{update.message.document.file_name}"
                 with open(zip_path, 'wb') as f:
                     f.write(file_content)
+                
+                # Шаг 3: Распаковка (60%)
+                bot.edit_message_text("⏳ [▓▓▓▓▓▓░░░░] 60% - Распаковываю...", chat_id, status_msg.message_id)
                 extract_path = f"/tmp/extract_{update.message.message_id}"
                 with zipfile.ZipFile(zip_path, 'r') as z:
                     z.extractall(extract_path)
-
+                
+                # Шаг 4: Поиск файлов (80%)
+                bot.edit_message_text("⏳ [▓▓▓▓▓▓▓▓░░] 80% - Ищу файлы...", chat_id, status_msg.message_id)
+                
                 cover = None
                 description_text = ""
                 epub_files = []
                 fb2_files = []
+
+                for root, dirs, files in os.walk(extract_path):
+                    for f in files:
+                        full_path = os.path.join(root, f)
+                        name_lower = f.lower()
+                        if name_lower.endswith(('.png', '.jpg', '.jpeg')):
+                            if cover is None:
+                                cover = full_path
+                        elif name_lower.endswith('.txt'):
+                            with open(full_path, 'r', encoding='utf-8') as txt:
+                                description_text = txt.read()
+                        elif name_lower.endswith('.epub'):
+                            epub_files.append(full_path)
+                        elif name_lower.endswith('.fb2'):
+                            fb2_files.append(full_path)
+
+                # Шаг 5: Анализ EPUB (90%)
+                bot.edit_message_text("⏳ [▓▓▓▓▓▓▓▓▓░] 90% - Анализирую EPUB...", chat_id, status_msg.message_id)
+                
+                if not cover and epub_files:
+                    try:
+                        with zipfile.ZipFile(epub_files[0], 'r') as epub_zip:
+                            for name in epub_zip.namelist():
+                                if name.lower().endswith(('.png', '.jpg', '.jpeg')):
+                                    cover_data = epub_zip.read(name)
+                                    cover_path = os.path.join(extract_path, f"cover_from_epub_{os.path.basename(name)}")
+                                    with open(cover_path, 'wb') as cf:
+                                        cf.write(cover_data)
+                                    cover = cover_path
+                                    break
+                    except:
+                        pass
+                
+                # Шаг 6: Готово (100%)
+                bot.edit_message_text("✅ [▓▓▓▓▓▓▓▓▓▓] 100% - Готово!", chat_id, status_msg.message_id)
+                
+                import time
+                time.sleep(0.5)
+                bot.delete_message(chat_id, status_msg.message_id)
+                
+                # Проверки
+                if not cover:
+                    bot.send_message(chat_id, "❌ Не найдена обложка")
+                    shutil.rmtree(extract_path)
+                    os.remove(zip_path)
+                    return 'OK', 200
+
+                if not epub_files and not fb2_files:
+                    bot.send_message(chat_id, "❌ Нет EPUB или FB2 файлов")
+                    shutil.rmtree(extract_path)
+                    os.remove(zip_path)
+                    return 'OK', 200
+
+                info = parse_info(description_text) if description_text else {'title_ru': '', 'title_en': '', 'title_original': '', 'author': '', 'links': []}
+                epub_path = epub_files[0] if epub_files else None
+                chapters = count_chapters_from_epub(epub_path) if epub_path else "Неизвестно"
+                annotation = extract_annotation_from_epub(epub_path) if epub_path else "Описание отсутствует"
+
+                user_data[chat_id] = {
+                    'info': info,
+                    'chapters': chapters,
+                    'annotation': annotation,
+                    'cover_path': cover,
+                    'epub_files': epub_files,
+                    'fb2_files': fb2_files,
+                    'extract_path': extract_path,
+                    'zip_path': zip_path
+                }
+                bot.send_message(chat_id, "✅ Архив обработан. Теперь выберите параметры публикации.")
+                bot.send_message(chat_id, "Выберите модель для Глоссария:", reply_markup=glossary_keyboard())
+                return 'OK', 200
 
                 for root, dirs, files in os.walk(extract_path):
                     for f in files:
