@@ -5,6 +5,7 @@ import zipfile
 import os
 import shutil
 import re
+import time
 from ebooklib import epub
 from bs4 import BeautifulSoup
 
@@ -88,14 +89,12 @@ def extract_annotation_from_epub(epub_path):
         from bs4 import BeautifulSoup
         
         with zipfile.ZipFile(epub_path, 'r') as epub_zip:
-            # Ищем файл, где есть h1 с текстом "Annotation" или "Аннотация"
             for name in epub_zip.namelist():
                 if name.endswith('.xhtml') or name.endswith('.html'):
                     with epub_zip.open(name) as f:
                         content = f.read().decode('utf-8', errors='ignore')
                         soup = BeautifulSoup(content, 'html.parser')
                         
-                        # Ищем h1 с любым из вариантов
                         h1 = None
                         for tag in soup.find_all('h1'):
                             text = tag.get_text().strip()
@@ -103,30 +102,25 @@ def extract_annotation_from_epub(epub_path):
                                 h1 = tag
                                 break
                         
-                        # Если не нашли по тексту, ищем по id
                         if not h1:
                             h1 = soup.find('h1', id='calibre_toc_1')
                         
                         if h1:
                             texts = []
-                            # Берём все следующие div с классом paragraph
                             for sibling in h1.find_next_siblings():
                                 if sibling.name == 'div' and 'paragraph' in sibling.get('class', []):
                                     text = sibling.get_text().strip()
                                     if text:
                                         texts.append(text)
-                                # Останавливаемся перед оглавлением
                                 if sibling.name == 'hr':
                                     break
                             
                             if texts:
-                                result = '\n'.join(texts)[:1000]
-                                print(f"DEBUG: Найдено {len(texts)} параграфов аннотации")
+                                result = '\n'.join(texts)[:2000]
                                 return result
         
         return "Описание отсутствует"
     except Exception as e:
-        print(f"Ошибка: {e}")
         return "Описание отсутствует"
 
 def parse_info(content):
@@ -168,7 +162,8 @@ def format_text_post(info, chapters, status, annotation):
     lines.append(f"📊 Глав: {chapters}")
     lines.append(f"📌 Статус: {status}")
     lines.append("")
-    quoted = f'<blockquote>{annotation}</blockquote>'
+    # Раскрывающаяся цитата (спойлер)
+    quoted = f"||{annotation}||"
     lines.append(f"📖 Описание:\n{quoted}")
     if info.get('links') and len(info['links']) > 0:
         lines.append("")
@@ -216,7 +211,7 @@ def webhook():
                 return 'OK', 200
 
             if update.message.document:
-                # Прогресс-бар
+                # Прогресс-бар (остаётся после выбора)
                 status_msg = bot.send_message(chat_id, "⏳ [░░░░░░░░░░] 0% - Начинаю...")
                 
                 # Шаг 1: Скачивание (20%)
@@ -276,12 +271,8 @@ def webhook():
                     except:
                         pass
                 
-                # Шаг 6: Готово (100%)
-                bot.edit_message_text("✅ [▓▓▓▓▓▓▓▓▓▓] 100% - Готово!", chat_id, status_msg.message_id)
-                
-                import time
-                time.sleep(0.5)
-                bot.delete_message(chat_id, status_msg.message_id)
+                # Шаг 6: Готово (100%) - прогресс-бар остаётся
+                bot.edit_message_text("✅ [▓▓▓▓▓▓▓▓▓▓] 100% - Обработка завершена!", chat_id, status_msg.message_id)
                 
                 # Проверки
                 if not cover:
@@ -311,66 +302,7 @@ def webhook():
                     'extract_path': extract_path,
                     'zip_path': zip_path
                 }
-                bot.send_message(chat_id, "✅ Архив обработан. Теперь выберите параметры публикации.")
-                bot.send_message(chat_id, "Выберите модель для Глоссария:", reply_markup=glossary_keyboard())
-                return 'OK', 200
-
-                for root, dirs, files in os.walk(extract_path):
-                    for f in files:
-                        full_path = os.path.join(root, f)
-                        name_lower = f.lower()
-                        if name_lower.endswith(('.png', '.jpg', '.jpeg')):
-                            if cover is None:
-                                cover = full_path
-                        elif name_lower.endswith('.txt'):
-                            with open(full_path, 'r', encoding='utf-8') as txt:
-                                description_text = txt.read()
-                        elif name_lower.endswith('.epub'):
-                            epub_files.append(full_path)
-                        elif name_lower.endswith('.fb2'):
-                            fb2_files.append(full_path)
-
-                if not cover and epub_files:
-                    try:
-                        with zipfile.ZipFile(epub_files[0], 'r') as epub_zip:
-                            for name in epub_zip.namelist():
-                                if name.lower().endswith(('.png', '.jpg', '.jpeg')):
-                                    cover_data = epub_zip.read(name)
-                                    cover_path = os.path.join(extract_path, f"cover_from_epub_{os.path.basename(name)}")
-                                    with open(cover_path, 'wb') as cf:
-                                        cf.write(cover_data)
-                                    cover = cover_path
-                                    break
-                    except:
-                        pass
-
-                if not cover:
-                    bot.send_message(chat_id, "❌ Не найдена обложка")
-                    shutil.rmtree(extract_path)
-                    os.remove(zip_path)
-                    return 'OK', 200
-
-                if not epub_files and not fb2_files:
-                    bot.send_message(chat_id, "❌ Нет EPUB или FB2 файлов")
-                    shutil.rmtree(extract_path)
-                    os.remove(zip_path)
-                    return 'OK', 200
-
-                info = parse_info(description_text) if description_text else {'title_ru': '', 'title_en': '', 'title_original': '', 'author': '', 'links': []}
-                epub_path = epub_files[0] if epub_files else None
-                chapters = count_chapters_from_epub(epub_path) if epub_path else "Неизвестно"
-                annotation = extract_annotation_from_epub(epub_path) if epub_path else "Описание отсутствует"
-
-                user_data[chat_id] = {
-                    'info': info,
-                    'chapters': chapters,
-                    'annotation': annotation,
-                    'cover_path': cover,
-                    'epub_files': epub_files,
-                    'fb2_files': fb2_files,
-                    'extract_path': extract_path,
-                    'zip_path': zip_path
-                }
+                # Прогресс-бар остаётся, кнопки появляются ниже
                 bot.send_message(chat_id, "✅ Архив обработан. Теперь выберите параметры публикации.")
                 bot.send_message(chat_id, "Выберите модель для Глоссария:", reply_markup=glossary_keyboard())
                 return 'OK', 200
@@ -382,6 +314,12 @@ def webhook():
             category = data_parts[0]
             value = data_parts[1] if len(data_parts) > 1 else ''
             bot.answer_callback_query(callback.id)
+            
+            # Удаляем сообщение с кнопками после выбора
+            try:
+                bot.delete_message(chat_id, callback.message.message_id)
+            except:
+                pass
 
             if category == 'glossary':
                 if value == 'other':
@@ -415,17 +353,20 @@ def webhook():
                 post2 = format_text_post(data['info'], data['chapters'], choices['status'], data['annotation'])
                 post3 = format_files_post(choices['glossary'], choices['translation'], choices.get('filter', 'none'))
 
+                # Пост 1: обложка
                 with open(data['cover_path'], 'rb') as img:
                     bot.send_photo(CHANNEL_ID, img)
-                bot.send_message(CHANNEL_ID, post2, disable_web_page_preview=True)
+                # Пост 2: текст с раскрывающейся цитатой
+                bot.send_message(CHANNEL_ID, post2, parse_mode="MarkdownV2", disable_web_page_preview=True)
+                # Пост 3: параметры
                 bot.send_message(CHANNEL_ID, post3)
-                media_group = []
+                # Файлы
                 for epub in data['epub_files']:
-                    media_group.append(InputMediaDocument(open(epub, 'rb')))
+                    with open(epub, 'rb') as f:
+                        bot.send_document(CHANNEL_ID, f)
                 for fb2 in data['fb2_files']:
-                    media_group.append(InputMediaDocument(open(fb2, 'rb')))
-                if media_group:
-                    bot.send_media_group(CHANNEL_ID, media_group)
+                    with open(fb2, 'rb') as f:
+                        bot.send_document(CHANNEL_ID, f)
 
                 bot.send_message(chat_id, f"✅ Книга '{data['info'].get('title_ru', 'Без названия')}' опубликована в канале!")
                 shutil.rmtree(data['extract_path'])
