@@ -162,22 +162,14 @@ def format_text_post(info, chapters, status, annotation):
     lines.append(f"📊 Глав: {chapters}")
     lines.append(f"📌 Статус: {status}")
     lines.append("")
-    # Обычная цитата (через символ >)
-    quoted = '\n'.join([f"> {line}" for line in annotation.split('\n') if line.strip()])
+    # Цитата через HTML-тег blockquote
+    quoted = f'<blockquote>{annotation}</blockquote>'
     lines.append(f"📖 Описание:\n{quoted}")
     if info.get('links') and len(info['links']) > 0:
         lines.append("")
         lines.append("🔗 Ссылки:")
         for link in info['links']:
             lines.append(link)
-    return '\n'.join(lines)
-
-def format_files_post(glossary, translation, filter_choice):
-    lines = []
-    lines.append("🤖 Глоссарий: " + glossary)
-    lines.append("🤖 Перевод: " + translation)
-    if filter_choice and filter_choice != "none":
-        lines.append("🧹 Фильтр: " + filter_choice)
     return '\n'.join(lines)
 
 @app.route('/')
@@ -353,7 +345,7 @@ def webhook():
                     
                     bot.edit_message_text("⏳ [▓▓▓▓▓▓░░░░] 60% - Отправляю текст...", chat_id, pub_status.message_id)
                     post2 = format_text_post(data['info'], data['chapters'], choices['status'], data['annotation'])
-                    bot.send_message(CHANNEL_ID, post2, disable_web_page_preview=True)
+                    bot.send_message(CHANNEL_ID, post2, parse_mode="HTML", disable_web_page_preview=True)
                     
                     bot.edit_message_text("⏳ [▓▓▓▓▓▓▓▓░░] 80% - Отправляю параметры...", chat_id, pub_status.message_id)
                     post3 = format_files_post(choices['glossary'], choices['translation'], choices.get('filter', 'none'))
