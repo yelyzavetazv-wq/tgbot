@@ -84,52 +84,49 @@ def count_chapters_from_epub(epub_path):
 
 def extract_annotation_from_epub(epub_path):
     try:
-        book = epub.read_epub(epub_path)
-        annotation_text = []
+        import zipfile
+        from bs4 import BeautifulSoup
         
-        for item in book.get_items():
-            if item.get_type() == 8:  # документ
-                soup = BeautifulSoup(item.get_content(), 'html.parser')
-                
-                # 1. Ищем заголовок Annotation/Аннотация
-                for header in soup.find_all(['h1', 'h2', 'h3', 'h4']):
-                    header_text = header.get_text().lower()
-                    if 'annotation' in header_text or 'аннотация' in header_text or 'описание' in header_text:
-                        # Берём следующие параграфы
-                        for sibling in header.find_next_siblings():
-                            if sibling.name in ['div', 'p']:
-                                text = sibling.get_text().strip()
-                                if text and len(text) > 20:
-                                    annotation_text.append(text)
-                            if len(annotation_text) >= 10:
+        with zipfile.ZipFile(epub_path, 'r') as epub_zip:
+            # Ищем файл, где есть h1 с текстом "Annotation" или "Аннотация"
+            for name in epub_zip.namelist():
+                if name.endswith('.xhtml') or name.endswith('.html'):
+                    with epub_zip.open(name) as f:
+                        content = f.read().decode('utf-8', errors='ignore')
+                        soup = BeautifulSoup(content, 'html.parser')
+                        
+                        # Ищем h1 с любым из вариантов
+                        h1 = None
+                        for tag in soup.find_all('h1'):
+                            text = tag.get_text().strip()
+                            if text == 'Annotation' or text == 'Аннотация':
+                                h1 = tag
                                 break
-                        break
-                
-                # 2. Если не нашли, ищем div с классом paragraph
-                if not annotation_text:
-                    for div in soup.find_all('div', class_='paragraph'):
-                        text = div.get_text().strip()
-                        if text and len(text) > 20:
-                            annotation_text.append(text)
-                            if len(annotation_text) >= 10:
-                                break
-                
-                # 3. Если всё ещё нет, берём первый длинный абзац
-                if not annotation_text:
-                    for p in soup.find_all('p'):
-                        text = p.get_text().strip()
-                        if len(text) > 100:
-                            annotation_text.append(text)
-                            break
-                
-                if annotation_text:
-                    break
+                        
+                        # Если не нашли по тексту, ищем по id
+                        if not h1:
+                            h1 = soup.find('h1', id='calibre_toc_1')
+                        
+                        if h1:
+                            texts = []
+                            # Берём все следующие div с классом paragraph
+                            for sibling in h1.find_next_siblings():
+                                if sibling.name == 'div' and 'paragraph' in sibling.get('class', []):
+                                    text = sibling.get_text().strip()
+                                    if text:
+                                        texts.append(text)
+                                # Останавливаемся перед оглавлением
+                                if sibling.name == 'hr':
+                                    break
+                            
+                            if texts:
+                                result = '\n'.join(texts)[:1000]
+                                print(f"DEBUG: Найдено {len(texts)} параграфов аннотации")
+                                return result
         
-        result = '\n'.join(annotation_text)[:1000] if annotation_text else "Описание отсутствует"
-        print(f"DEBUG: Аннотация найдена, длина: {len(result)}")
-        return result
+        return "Описание отсутствует"
     except Exception as e:
-        print(f"Ошибка извлечения аннотации: {e}")
+        print(f"Ошибка: {e}")
         return "Описание отсутствует"
 
 def parse_info(content):
