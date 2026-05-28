@@ -170,7 +170,6 @@ def format_text_post(info, chapters, status, annotation):
     lines.append("")
     quoted = f'<blockquote>{annotation}</blockquote>'
     lines.append(f"📖 Описание:\n{quoted}")
-
     if info.get('links') and len(info['links']) > 0:
         lines.append("")
         lines.append("🔗 Ссылки:")
