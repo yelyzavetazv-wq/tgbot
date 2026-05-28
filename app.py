@@ -1,6 +1,6 @@
 from flask import Flask, request
 import telebot
-from telebot.types import InlineKeyboardMarkup, InlineKeyboardButton, InputMediaDocument
+from telebot.types import InlineKeyboardMarkup, InlineKeyboardButton
 import zipfile
 import os
 import shutil
@@ -162,8 +162,8 @@ def format_text_post(info, chapters, status, annotation):
     lines.append(f"📊 Глав: {chapters}")
     lines.append(f"📌 Статус: {status}")
     lines.append("")
-    # Раскрывающаяся цитата (спойлер)
-    quoted = f"||{annotation}||"
+    # Обычная цитата (через символ >)
+    quoted = '\n'.join([f"> {line}" for line in annotation.split('\n') if line.strip()])
     lines.append(f"📖 Описание:\n{quoted}")
     if info.get('links') and len(info['links']) > 0:
         lines.append("")
@@ -211,27 +211,23 @@ def webhook():
                 return 'OK', 200
 
             if update.message.document:
-                # Прогресс-бар (остаётся после выбора)
+                # Прогресс-бар обработки архива
                 status_msg = bot.send_message(chat_id, "⏳ [░░░░░░░░░░] 0% - Начинаю...")
                 
-                # Шаг 1: Скачивание (20%)
                 bot.edit_message_text("⏳ [▓▓░░░░░░░░] 20% - Скачиваю...", chat_id, status_msg.message_id)
                 file_info = bot.get_file(update.message.document.file_id)
                 file_content = bot.download_file(file_info.file_path)
                 
-                # Шаг 2: Сохранение (40%)
                 bot.edit_message_text("⏳ [▓▓▓▓░░░░░░] 40% - Сохраняю...", chat_id, status_msg.message_id)
                 zip_path = f"/tmp/{update.message.document.file_name}"
                 with open(zip_path, 'wb') as f:
                     f.write(file_content)
                 
-                # Шаг 3: Распаковка (60%)
                 bot.edit_message_text("⏳ [▓▓▓▓▓▓░░░░] 60% - Распаковываю...", chat_id, status_msg.message_id)
                 extract_path = f"/tmp/extract_{update.message.message_id}"
                 with zipfile.ZipFile(zip_path, 'r') as z:
                     z.extractall(extract_path)
                 
-                # Шаг 4: Поиск файлов (80%)
                 bot.edit_message_text("⏳ [▓▓▓▓▓▓▓▓░░] 80% - Ищу файлы...", chat_id, status_msg.message_id)
                 
                 cover = None
@@ -254,7 +250,6 @@ def webhook():
                         elif name_lower.endswith('.fb2'):
                             fb2_files.append(full_path)
 
-                # Шаг 5: Анализ EPUB (90%)
                 bot.edit_message_text("⏳ [▓▓▓▓▓▓▓▓▓░] 90% - Анализирую EPUB...", chat_id, status_msg.message_id)
                 
                 if not cover and epub_files:
@@ -271,10 +266,9 @@ def webhook():
                     except:
                         pass
                 
-                # Шаг 6: Готово (100%) - прогресс-бар остаётся
-                bot.edit_message_text("✅ [▓▓▓▓▓▓▓▓▓▓] 100% - Обработка завершена!", chat_id, status_msg.message_id)
+                # Удаляем прогресс-бар (100% покажем после публикации)
+                bot.delete_message(chat_id, status_msg.message_id)
                 
-                # Проверки
                 if not cover:
                     bot.send_message(chat_id, "❌ Не найдена обложка")
                     shutil.rmtree(extract_path)
@@ -302,7 +296,6 @@ def webhook():
                     'extract_path': extract_path,
                     'zip_path': zip_path
                 }
-                # Прогресс-бар остаётся, кнопки появляются ниже
                 bot.send_message(chat_id, "✅ Архив обработан. Теперь выберите параметры публикации.")
                 bot.send_message(chat_id, "Выберите модель для Глоссария:", reply_markup=glossary_keyboard())
                 return 'OK', 200
@@ -343,6 +336,9 @@ def webhook():
                     user_choices[chat_id]['filter'] = value
                     bot.send_message(chat_id, "Выберите Статус:", reply_markup=status_keyboard())
             elif category == 'status':
+                # Прогресс-бар публикации
+                pub_status = bot.send_message(chat_id, "⏳ [░░░░░░░░░░] 0% - Публикую...")
+                
                 user_choices[chat_id]['status'] = value
                 choices = user_choices[chat_id]
                 data = user_data.get(chat_id)
@@ -350,25 +346,40 @@ def webhook():
                     bot.send_message(chat_id, "❌ Ошибка: данные не найдены")
                     return 'OK', 200
 
-                post2 = format_text_post(data['info'], data['chapters'], choices['status'], data['annotation'])
-                post3 = format_files_post(choices['glossary'], choices['translation'], choices.get('filter', 'none'))
-
-                # Пост 1: обложка
-                with open(data['cover_path'], 'rb') as img:
-                    bot.send_photo(CHANNEL_ID, img)
-                # Пост 2: текст с раскрывающейся цитатой
-                bot.send_message(CHANNEL_ID, post2, parse_mode="MarkdownV2", disable_web_page_preview=True)
-                # Пост 3: параметры
-                bot.send_message(CHANNEL_ID, post3)
-                # Файлы
-                for epub in data['epub_files']:
-                    with open(epub, 'rb') as f:
-                        bot.send_document(CHANNEL_ID, f)
-                for fb2 in data['fb2_files']:
-                    with open(fb2, 'rb') as f:
-                        bot.send_document(CHANNEL_ID, f)
-
-                bot.send_message(chat_id, f"✅ Книга '{data['info'].get('title_ru', 'Без названия')}' опубликована в канале!")
+                try:
+                    bot.edit_message_text("⏳ [▓▓▓▓░░░░░░] 40% - Отправляю обложку...", chat_id, pub_status.message_id)
+                    with open(data['cover_path'], 'rb') as img:
+                        bot.send_photo(CHANNEL_ID, img)
+                    
+                    bot.edit_message_text("⏳ [▓▓▓▓▓▓░░░░] 60% - Отправляю текст...", chat_id, pub_status.message_id)
+                    post2 = format_text_post(data['info'], data['chapters'], choices['status'], data['annotation'])
+                    bot.send_message(CHANNEL_ID, post2, disable_web_page_preview=True)
+                    
+                    bot.edit_message_text("⏳ [▓▓▓▓▓▓▓▓░░] 80% - Отправляю параметры...", chat_id, pub_status.message_id)
+                    post3 = format_files_post(choices['glossary'], choices['translation'], choices.get('filter', 'none'))
+                    bot.send_message(CHANNEL_ID, post3)
+                    
+                    bot.edit_message_text("⏳ [▓▓▓▓▓▓▓▓▓░] 90% - Отправляю файлы...", chat_id, pub_status.message_id)
+                    for epub in data['epub_files']:
+                        with open(epub, 'rb') as f:
+                            bot.send_document(CHANNEL_ID, f)
+                    for fb2 in data['fb2_files']:
+                        with open(fb2, 'rb') as f:
+                            bot.send_document(CHANNEL_ID, f)
+                    
+                    # 100% - успех
+                    bot.edit_message_text("✅ [▓▓▓▓▓▓▓▓▓▓] 100% - Книга опубликована!", chat_id, pub_status.message_id)
+                    time.sleep(1)
+                    bot.delete_message(chat_id, pub_status.message_id)
+                    
+                    bot.send_message(chat_id, f"✅ Книга '{data['info'].get('title_ru', 'Без названия')}' опубликована в канале!")
+                    
+                except Exception as e:
+                    bot.edit_message_text(f"❌ Ошибка: {str(e)[:50]}", chat_id, pub_status.message_id)
+                    time.sleep(2)
+                    bot.delete_message(chat_id, pub_status.message_id)
+                    bot.send_message(chat_id, f"❌ Ошибка публикации: {str(e)}")
+                
                 shutil.rmtree(data['extract_path'])
                 os.remove(data['zip_path'])
                 del user_choices[chat_id]
