@@ -168,7 +168,10 @@ def format_text_post(info, chapters, status, annotation):
     lines.append(f"📊 Глав: {chapters}")
     lines.append(f"📌 Статус: {status}")
     lines.append("")
-    lines.append(f"📖 Описание:\n{annotation}")
+    # Цитата: добавляем символ > перед каждой строкой
+    quoted_lines = [f"> {line}" for line in annotation.split('\n') if line.strip()]
+    quoted = '\n'.join(quoted_lines)
+    lines.append(f"📖 Описание:\n{quoted}")
     if info.get('links') and len(info['links']) > 0:
         lines.append("")
         lines.append("🔗 Ссылки:")
