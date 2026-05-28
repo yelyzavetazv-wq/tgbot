@@ -1,2 +1,5 @@
 pyTelegramBotAPI==4.33.0
 flask==3.0.0
+ebooklib==0.20
+beautifulsoup4==4.12.3
+lxml==5.3.0
