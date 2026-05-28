@@ -168,9 +168,7 @@ def format_text_post(info, chapters, status, annotation):
     lines.append(f"📊 Глав: {chapters}")
     lines.append(f"📌 Статус: {status}")
     lines.append("")
-    desc_text = annotation if annotation else "Описание отсутствует"
-    # Цитата: каждая строка начинается с > и пробела
-    quoted = '\n'.join([f"> {line}" for line in desc_text.split('\n') if line.strip()])
+    quoted = f'<blockquote>{annotation}</blockquote>'
     lines.append(f"📖 Описание:\n{quoted}")
 
     if info.get('links') and len(info['links']) > 0:
