@@ -2,8 +2,8 @@ from flask import Flask, request
 import telebot
 import os
 
-TOKEN = os.environ.get("TELEGRAM_TOKEN", "TOKEN = "TOKEN = "8653759634:AAGxGfkJvj3pEZ_kvry7FRkqzYhnxeJNZlU")
-CHANNEL_ID = os.environ.get("CHANNEL_ID", "@my_ff_translate")
+TOKEN = "8653759634:AAGxGfkJvj3pEZ_kvry7FRkqzYhnxeJNZlU"
+CHANNEL_ID = "@my_ff_translate"
 
 bot = telebot.TeleBot(TOKEN)
 app = Flask(__name__)
