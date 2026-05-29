@@ -398,10 +398,11 @@ def webhook():
                     all_files = data['epub_files'] + data['fb2_files']
                     for i, file_path in enumerate(all_files):
                         with open(file_path, 'rb') as f:
+                            clean_name = fix_filename(os.path.basename(file_path))
                             if i == len(all_files) - 1:
-                                bot.send_document(CHANNEL_ID, f, caption=post3)
+                                bot.send_document(CHANNEL_ID, f, caption=post3, visible_file_name=clean_name)
                             else:
-                                bot.send_document(CHANNEL_ID, f)
+                                bot.send_document(CHANNEL_ID, f, visible_file_name=clean_name)
                     
                     if progress_msg_id:
                         bot.edit_message_text("✅ [▓▓▓▓▓▓▓▓▓▓] 100% - Книга опубликована!", chat_id, progress_msg_id)
