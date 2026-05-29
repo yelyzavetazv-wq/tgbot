@@ -389,20 +389,22 @@ def webhook():
                     # Отправляем файлы с подписью (параметры под последним файлом)
                     all_files = data['epub_files'] + data['fb2_files']
                     for i, file_path in enumerate(all_files):
-                        clean_name = fix_filename(os.path.basename(file_path))
+                        dir_name = os.path.dirname(file_path)
+                        old_name = os.path.basename(file_path)
+                        new_name = fix_filename(old_name)
+                        new_path = os.path.join(dir_name, new_name)
                         
-                        # Читаем файл в память
-                        with open(file_path, 'rb') as f:
-                            file_data = f.read()
+                        # Переименовываем файл
+                        os.rename(file_path, new_path)
                         
-                        # Создаём BytesIO объект с правильным именем
-                        file_io = io.BytesIO(file_data)
-                        file_io.name = clean_name
+                        with open(new_path, 'rb') as f:
+                            if i == len(all_files) - 1:
+                                bot.send_document(CHANNEL_ID, f, caption=post3)
+                            else:
+                                bot.send_document(CHANNEL_ID, f)
                         
-                        if i == len(all_files) - 1:
-                            bot.send_document(CHANNEL_ID, file_io, caption=post3)
-                        else:
-                            bot.send_document(CHANNEL_ID, file_io)
+                        # Переименовываем обратно (на всякий случай)
+                        os.rename(new_path, file_path)
                     
                     if progress_msg_id:
                         bot.edit_message_text("✅ [▓▓▓▓▓▓▓▓▓▓] 100% - Книга опубликована!", chat_id, progress_msg_id)
