@@ -395,22 +395,11 @@ def webhook():
                     # Отправляем файлы с подписью (параметры под последним файлом)
                     all_files = data['epub_files'] + data['fb2_files']
                     for i, file_path in enumerate(all_files):
-                        dir_name = os.path.dirname(file_path)
-                        old_name = os.path.basename(file_path)
-                        new_name = fix_filename(old_name)
-                        new_path = os.path.join(dir_name, new_name)
-                        
-                        # Переименовываем файл
-                        os.rename(file_path, new_path)
-                        
-                        with open(new_path, 'rb') as f:
+                        with open(file_path, 'rb') as f:
                             if i == len(all_files) - 1:
-                                bot.send_document(CHANNEL_ID, f, caption=post3)
+                                bot.send_document(CHANNEL_ID, f, caption=post3, timeout=120)
                             else:
-                                bot.send_document(CHANNEL_ID, f)
-                        
-                        # Переименовываем обратно (на всякий случай)
-                        os.rename(new_path, file_path)
+                                bot.send_document(CHANNEL_ID, f, timeout=120)
                     
                     if progress_msg_id:
                         bot.edit_message_text("✅ [▓▓▓▓▓▓▓▓▓▓] 100% - Книга опубликована!", chat_id, progress_msg_id)
