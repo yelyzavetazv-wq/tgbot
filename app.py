@@ -8,17 +8,8 @@ import re
 import time
 from ebooklib import epub
 from bs4 import BeautifulSoup
+from telebot.types import InputFile
 
-from flask import Flask, request
-import telebot
-from telebot.types import InlineKeyboardMarkup, InlineKeyboardButton
-import zipfile
-import os
-import shutil
-import re
-import time
-from ebooklib import epub
-from bs4 import BeautifulSoup
 
 # ========== ВСТАВЬТЕ СЮДА ==========
 def fix_filename(filename):
@@ -397,20 +388,19 @@ def webhook():
                     # Отправляем файлы с подписью (параметры под последним файлом)
                     all_files = data['epub_files'] + data['fb2_files']
                     for i, file_path in enumerate(all_files):
-                        # Создаём временную копию с правильным именем
                         original_name = os.path.basename(file_path)
                         clean_name = fix_filename(original_name)
-                        temp_path = os.path.join('/tmp', clean_name)
-                        shutil.copy2(file_path, temp_path)
                         
-                        with open(temp_path, 'rb') as f:
-                            if i == len(all_files) - 1:
-                                bot.send_document(CHANNEL_ID, f, caption=post3)
-                            else:
-                                bot.send_document(CHANNEL_ID, f)
+                        # Создаём объект InputFile с правильным именем
+                        with open(file_path, 'rb') as f:
+                            file_data = f.read()
                         
-                        # Удаляем временный файл
-                        os.remove(temp_path)
+                        input_file = InputFile(file_data, filename=clean_name)
+                        
+                        if i == len(all_files) - 1:
+                            bot.send_document(CHANNEL_ID, input_file, caption=post3)
+                        else:
+                            bot.send_document(CHANNEL_ID, input_file)
                     
                     if progress_msg_id:
                         bot.edit_message_text("✅ [▓▓▓▓▓▓▓▓▓▓] 100% - Книга опубликована!", chat_id, progress_msg_id)
