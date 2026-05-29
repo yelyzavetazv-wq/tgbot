@@ -400,9 +400,9 @@ def webhook():
                         with open(file_path, 'rb') as f:
                             clean_name = fix_filename(os.path.basename(file_path))
                             if i == len(all_files) - 1:
-                                bot.send_document(CHANNEL_ID, f, caption=post3, visible_file_name=clean_name)
+                                bot.send_document(CHANNEL_ID, (clean_name, f), caption=post3)
                             else:
-                                bot.send_document(CHANNEL_ID, f, visible_file_name=clean_name)
+                                bot.send_document(CHANNEL_ID, (clean_name, f))
                     
                     if progress_msg_id:
                         bot.edit_message_text("✅ [▓▓▓▓▓▓▓▓▓▓] 100% - Книга опубликована!", chat_id, progress_msg_id)
