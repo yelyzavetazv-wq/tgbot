@@ -16,12 +16,18 @@ import io
 def fix_filename(filename):
     """Исправляет кракозябры в именах файлов"""
     try:
-        return filename.encode('latin1').decode('utf-8')
+        # Пробуем декодировать из cp866
+        return filename.encode('cp866').decode('utf-8')
     except:
         try:
-            return filename.encode('cp1252').decode('utf-8')
+            # Пробуем декодировать из cp1251
+            return filename.encode('cp1251').decode('utf-8')
         except:
-            return filename
+            try:
+                # Пробуем декодировать из latin1
+                return filename.encode('latin1').decode('utf-8')
+            except:
+                return filename
 # ==================================
 
 TOKEN = "8653759634:AAGxGfkJvj3pEZ_kvry7FRkqzYhnxeJNZlU"
