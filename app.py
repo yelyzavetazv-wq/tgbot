@@ -9,6 +9,7 @@ import time
 from ebooklib import epub
 from bs4 import BeautifulSoup
 from telebot.types import InputFile
+import io
 
 
 # ========== ВСТАВЬТЕ СЮДА ==========
@@ -388,19 +389,20 @@ def webhook():
                     # Отправляем файлы с подписью (параметры под последним файлом)
                     all_files = data['epub_files'] + data['fb2_files']
                     for i, file_path in enumerate(all_files):
-                        original_name = os.path.basename(file_path)
-                        clean_name = fix_filename(original_name)
+                        clean_name = fix_filename(os.path.basename(file_path))
                         
-                        # Создаём объект InputFile с правильным именем
+                        # Читаем файл в память
                         with open(file_path, 'rb') as f:
                             file_data = f.read()
                         
-                        input_file = InputFile(file_data, filename=clean_name)
+                        # Создаём BytesIO объект с правильным именем
+                        file_io = io.BytesIO(file_data)
+                        file_io.name = clean_name
                         
                         if i == len(all_files) - 1:
-                            bot.send_document(CHANNEL_ID, input_file, caption=post3)
+                            bot.send_document(CHANNEL_ID, file_io, caption=post3)
                         else:
-                            bot.send_document(CHANNEL_ID, input_file)
+                            bot.send_document(CHANNEL_ID, file_io)
                     
                     if progress_msg_id:
                         bot.edit_message_text("✅ [▓▓▓▓▓▓▓▓▓▓] 100% - Книга опубликована!", chat_id, progress_msg_id)
