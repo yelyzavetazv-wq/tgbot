@@ -9,6 +9,36 @@ import time
 from ebooklib import epub
 from bs4 import BeautifulSoup
 
+from flask import Flask, request
+import telebot
+from telebot.types import InlineKeyboardMarkup, InlineKeyboardButton
+import zipfile
+import os
+import shutil
+import re
+import time
+from ebooklib import epub
+from bs4 import BeautifulSoup
+
+# ========== ВСТАВЬТЕ СЮДА ==========
+def fix_filename(filename):
+    """Исправляет кракозябры в именах файлов"""
+    try:
+        return filename.encode('latin1').decode('utf-8')
+    except:
+        try:
+            return filename.encode('cp1252').decode('utf-8')
+        except:
+            return filename
+# ==================================
+
+TOKEN = "8653759634:AAGxGfkJvj3pEZ_kvry7FRkqzYhnxeJNZlU"
+CHANNEL_ID = "@my_ff_translate"
+
+bot = telebot.TeleBot(TOKEN)
+app = Flask(__name__)
+# ... остальной код
+
 TOKEN = "8653759634:AAGxGfkJvj3pEZ_kvry7FRkqzYhnxeJNZlU"
 CHANNEL_ID = "@my_ff_translate"
 
