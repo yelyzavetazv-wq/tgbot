@@ -13,21 +13,39 @@ import io
 
 
 # ========== ВСТАВЬТЕ СЮДА ==========
+import re
+
 def fix_filename(filename):
-    """Исправляет кракозябры в именах файлов"""
-    try:
-        # Пробуем декодировать из cp866
-        return filename.encode('cp866').decode('utf-8')
-    except:
-        try:
-            # Пробуем декодировать из cp1251
-            return filename.encode('cp1251').decode('utf-8')
-        except:
-            try:
-                # Пробуем декодировать из latin1
-                return filename.encode('latin1').decode('utf-8')
-            except:
-                return filename
+    """Переводит имя файла в латиницу и убирает кракозябры"""
+    name, ext = os.path.splitext(filename)
+    
+    # Заменяем русские буквы на латиницу
+    rus_to_lat = {
+        'а': 'a', 'б': 'b', 'в': 'v', 'г': 'g', 'д': 'd', 'е': 'e', 'ё': 'e',
+        'ж': 'zh', 'з': 'z', 'и': 'i', 'й': 'y', 'к': 'k', 'л': 'l', 'м': 'm',
+        'н': 'n', 'о': 'o', 'п': 'p', 'р': 'r', 'с': 's', 'т': 't', 'у': 'u',
+        'ф': 'f', 'х': 'h', 'ц': 'ts', 'ч': 'ch', 'ш': 'sh', 'щ': 'sch',
+        'ъ': '', 'ы': 'y', 'ь': '', 'э': 'e', 'ю': 'yu', 'я': 'ya',
+        'А': 'A', 'Б': 'B', 'В': 'V', 'Г': 'G', 'Д': 'D', 'Е': 'E', 'Ё': 'E',
+        'Ж': 'Zh', 'З': 'Z', 'И': 'I', 'Й': 'Y', 'К': 'K', 'Л': 'L', 'М': 'M',
+        'Н': 'N', 'О': 'O', 'П': 'P', 'Р': 'R', 'С': 'S', 'Т': 'T', 'У': 'U',
+        'Ф': 'F', 'Х': 'H', 'Ц': 'Ts', 'Ч': 'Ch', 'Ш': 'Sh', 'Щ': 'Sch',
+        'Ъ': '', 'Ы': 'Y', 'Ь': '', 'Э': 'E', 'Ю': 'Yu', 'Я': 'Ya'
+    }
+    
+    # Заменяем русские буквы
+    for rus, lat in rus_to_lat.items():
+        name = name.replace(rus, lat)
+    
+    # Убираем все остальные кракозябры (оставляем только буквы, цифры, точки, дефисы, пробелы)
+    name = re.sub(r'[^a-zA-Z0-9\s\.\-]', '', name)
+    # Убираем множественные пробелы
+    name = re.sub(r'\s+', ' ', name).strip()
+    
+    if not name or len(name) < 3:
+        name = "book"
+    
+    return name + ext
 # ==================================
 
 TOKEN = "8653759634:AAGxGfkJvj3pEZ_kvry7FRkqzYhnxeJNZlU"
