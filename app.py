@@ -10,7 +10,7 @@ from bs4 import BeautifulSoup
 
 # ================= CONFIG =================
 TOKEN = "PUT_YOUR_TOKEN_HERE"
-CHANNEL_ID = "@my_ff_translate"
+CHANNEL_ID = "@+PiSTnDvEds9mYjBi"
 
 bot = telebot.TeleBot(TOKEN)
 app = Flask(__name__)
