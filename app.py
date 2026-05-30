@@ -98,10 +98,38 @@ def extract_annotation(epub_path):
 
 
 def count_chapters(epub_path):
+    """Определяет количество глав по номеру в тексте последней главы из toc.ncx"""
     try:
-        book = epub.read_epub(epub_path)
-        return len(list(book.get_items()))
-    except:
+        import zipfile
+        import re
+        from bs4 import BeautifulSoup
+        
+        with zipfile.ZipFile(epub_path, 'r') as z:
+            for name in z.namelist():
+                if name.endswith('.ncx'):
+                    with z.open(name) as f:
+                        content = f.read().decode('utf-8', errors='ignore')
+                        soup = BeautifulSoup(content, 'xml')
+                        
+                        # Находим все navPoint
+                        nav_points = soup.find_all('navPoint')
+                        if nav_points:
+                            # Берём последний navPoint
+                            last_nav = nav_points[-1]
+                            # Ищем текст внутри navLabel
+                            nav_label = last_nav.find('navLabel')
+                            if nav_label:
+                                text_tag = nav_label.find('text')
+                                if text_tag and text_tag.text:
+                                    text = text_tag.text
+                                    # Ищем число в тексте (например "Глава 376")
+                                    match = re.search(r'(\d+)', text)
+                                    if match:
+                                        return int(match.group(1))
+                    break
+        return "?"
+    except Exception as e:
+        print(f"Ошибка подсчёта глав: {e}")
         return "?"
 
 
