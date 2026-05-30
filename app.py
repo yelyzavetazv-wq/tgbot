@@ -15,7 +15,7 @@ TOKEN = os.getenv("TOKEN")
 if not TOKEN or ":" not in TOKEN:
     raise ValueError("TOKEN не загружен или неправильный (проверь Render ENV)")
 
-CHANNEL_ID = "@+PiSTnDvEds9mYjBi"
+CHANNEL_ID = "@testikmatestikoxuestik"
 
 bot = telebot.TeleBot(TOKEN)
 app = Flask(__name__)
