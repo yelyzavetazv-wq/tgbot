@@ -6,8 +6,16 @@ import uuid
 import zipfile
 import re
 import xml.etree.ElementTree as ET
+import requests
 from ebooklib import epub, ITEM_COVER, ITEM_IMAGE
 from bs4 import BeautifulSoup
+from requests.adapters import HTTPAdapter
+from urllib3.util.retry import Retry
+
+# Настройка сессии с ретраями
+session = requests.Session()
+retries = Retry(total=3, backoff_factor=1)
+session.mount('https://', HTTPAdapter(max_retries=retries))
 
 # ================= CONFIG =================
 
@@ -82,7 +90,6 @@ def count_chapters(epub_path):
 
 
 def extract_tags_from_opf(epub_path):
-    """Извлекает теги (dc:subject) из content.opf"""
     tags = []
     try:
         with zipfile.ZipFile(epub_path, 'r') as z:
@@ -113,7 +120,6 @@ def parse_info(text, epub_path=None):
         "tags": []
     }
 
-    # Читаем из TXT
     for line in text.split("\n"):
         line = line.strip()
         if line.startswith("http"):
@@ -127,7 +133,6 @@ def parse_info(text, epub_path=None):
         elif "автор" in line.lower():
             info["author"] = line.split(":", 1)[1].strip()
 
-    # Парсим теги из EPUB (если есть)
     if epub_path:
         info["tags"] = extract_tags_from_opf(epub_path)
 
@@ -227,7 +232,7 @@ def start(message):
 @bot.message_handler(content_types=["document"])
 def handle_docs(message):
     file_info = bot.get_file(message.document.file_id)
-    file = bot.download_file(file_info.file_path)
+    file = bot.download_file(file_info.file_path, timeout=120)
 
     name = message.document.file_name
     path = f"/tmp/{uuid.uuid4().hex}_{name}"
@@ -246,7 +251,6 @@ def handle_docs(message):
         data["epub"] = path
         data["cover"] = extract_cover(path)
         bot.send_message(message.chat.id, "📚 EPUB получен")
-        # Проверяем, есть ли уже TXT
         if data["txt"]:
             bot.send_message(message.chat.id, "✅ Все файлы получены. Выберите Глоссарий:", reply_markup=glossary_keyboard())
         else:
@@ -266,7 +270,6 @@ def handle_docs(message):
             bot.send_message(message.chat.id, "⏳ Ожидаю EPUB...")
 
     elif name.endswith(".zip"):
-        # Если пришёл ZIP, распаковываем
         bot.send_message(message.chat.id, "📦 Распаковываю ZIP...")
         extract_path = f"/tmp/{uuid.uuid4().hex}"
         with zipfile.ZipFile(path, 'r') as z:
@@ -300,7 +303,6 @@ def callbacks(call):
 
     bot.answer_callback_query(call.id)
 
-    # Удаляем сообщение с кнопками
     try:
         bot.delete_message(chat_id, call.message.message_id)
     except:
@@ -363,43 +365,36 @@ def publish_to_channel(chat_id):
     txt = data.get("txt", "")
     cover = data.get("cover")
 
-    # Парсим информацию (с тегами из EPUB)
     info = parse_info(txt, epub_path)
-    
-    # Получаем главы и аннотацию
     chapters = count_chapters(epub_path) if epub_path else "?"
     annotation = extract_annotation(epub_path) if epub_path else "Описание отсутствует"
 
-    # Значения из кнопок
     glossary = choices.get("glossary", "?")
     translation = choices.get("translation", "?")
     filter_choice = choices.get("filter", "none")
     status = choices.get("status", "?")
 
-    # Форматируем посты
     post2 = format_text(info, chapters, status, annotation)
     post3 = format_files(glossary, translation, filter_choice)
 
-    # ПОСТ 1: обложка
+    # Пост 1: обложка
     if cover:
         with open(cover, "rb") as img:
-            bot.send_photo(CHANNEL_ID, img)
+            bot.send_photo(CHANNEL_ID, img, timeout=60)
 
-    # ПОСТ 2: текст
+    # Пост 2: текст
     bot.send_message(CHANNEL_ID, post2, parse_mode="HTML")
 
-    # ПОСТ 3: файлы + подпись с параметрами
+    # Пост 3: файлы с подписью
     if epub_path:
         with open(epub_path, "rb") as f:
-            bot.send_document(CHANNEL_ID, f, caption=post3)
+            bot.send_document(CHANNEL_ID, f, caption=post3, timeout=180)
     if fb2_path:
         with open(fb2_path, "rb") as f:
-            bot.send_document(CHANNEL_ID, f)
+            bot.send_document(CHANNEL_ID, f, timeout=180)
 
-    # Подтверждение пользователю
     bot.send_message(chat_id, f"✅ Книга '{info.get('title_ru', 'Без названия')}' опубликована в канале!")
 
-    # Очистка
     user_data.pop(chat_id, None)
     user_choices.pop(chat_id, None)
 
