@@ -232,8 +232,7 @@ def start(message):
 @bot.message_handler(content_types=["document"])
 def handle_docs(message):
     file_info = bot.get_file(message.document.file_id)
-    file = bot.download_file(file_info.file_path, timeout=120)
-
+    file = bot.download_file(file_info.file_path)
     name = message.document.file_name
     path = f"/tmp/{uuid.uuid4().hex}_{name}"
 
