@@ -222,6 +222,8 @@ def format_text(info, chapters, status, annotation):
 📊 Глав: {chapters}
 📌 Статус: {status}
 """
+
+    
     if info.get('tags'):
         tags_with_hash = ", ".join([f"#{tag}" for tag in info['tags']])
         text += f"🏷️ Теги: {tags_with_hash}\n"
