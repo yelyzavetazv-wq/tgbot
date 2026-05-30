@@ -4,30 +4,32 @@ from telebot.types import InlineKeyboardMarkup, InlineKeyboardButton
 import os
 import re
 import uuid
-import time
 from ebooklib import epub, ITEM_COVER, ITEM_IMAGE
 from bs4 import BeautifulSoup
-
-
 
 # ================= CONFIG =================
 
 TOKEN = os.getenv("TOKEN")
 
 if not TOKEN or ":" not in TOKEN:
-    raise ValueError("TOKEN не загружен или неправильный (проверь Render ENV)")
+    raise ValueError("TOKEN не найден в ENV")
 
 CHANNEL_ID = "@testikmatestikoxuestik"
 
-bot = telebot.TeleBot(TOKEN)
+bot = telebot.TeleBot(TOKEN, threaded=False)
+
 app = Flask(__name__)
-@app.route("/")
-def index():
-    return "Bot is running!"
+
 user_choices = {}
 user_data = {}
 
-# ================= EPUB HELPERS =================
+# ================= HEALTH =================
+
+@app.route("/")
+def index():
+    return "Bot is running!"
+
+# ================= EPUB =================
 
 def extract_cover(epub_path):
     try:
@@ -35,21 +37,22 @@ def extract_cover(epub_path):
 
         for item in book.get_items():
             if item.get_type() == ITEM_COVER:
-                path = f"/tmp/cover_{uuid.uuid4().hex}.jpg"
+                path = f"/tmp/{uuid.uuid4().hex}.jpg"
                 with open(path, "wb") as f:
                     f.write(item.get_content())
                 return path
 
         for item in book.get_items():
             if item.get_type() == ITEM_IMAGE:
-                path = f"/tmp/cover_{uuid.uuid4().hex}.jpg"
+                path = f"/tmp/{uuid.uuid4().hex}.jpg"
                 with open(path, "wb") as f:
                     f.write(item.get_content())
                 return path
 
-        return None
     except:
-        return None
+        pass
+
+    return None
 
 
 def count_chapters_from_epub(epub_path):
@@ -68,13 +71,13 @@ def extract_annotation_from_epub(epub_path):
                 if name.endswith((".xhtml", ".html")):
                     with z.open(name) as f:
                         soup = BeautifulSoup(f.read(), "html.parser")
-                        text = soup.get_text()
-                        if len(text) > 100:
-                            return text[:2000]
-        return "Описание отсутствует"
+                        txt = soup.get_text()
+                        if len(txt) > 100:
+                            return txt[:2000]
     except:
-        return "Описание отсутствует"
+        pass
 
+    return "Описание отсутствует"
 
 # ================= PARSER =================
 
@@ -89,62 +92,26 @@ def parse_info(text):
 
     for line in text.split("\n"):
         line = line.strip()
+
         if not line:
             continue
 
         if line.startswith("http"):
             info["links"].append(line)
+
         elif "название_ru" in line.lower():
             info["title_ru"] = line.split(":", 1)[1].strip()
+
         elif "название_en" in line.lower():
             info["title_en"] = line.split(":", 1)[1].strip()
+
         elif "название_original" in line.lower():
             info["title_original"] = line.split(":", 1)[1].strip()
+
         elif "автор" in line.lower():
             info["author"] = line.split(":", 1)[1].strip()
 
     return info
-
-
-# ================= KEYBOARDS =================
-
-def glossary_keyboard():
-    kb = InlineKeyboardMarkup()
-    kb.add(
-        InlineKeyboardButton("Gemini 3.5 Flash", callback_data="glossary:Gemini 3.5"),
-        InlineKeyboardButton("✏️ Другое", callback_data="glossary:other")
-    )
-    return kb
-
-
-def translation_keyboard():
-    kb = InlineKeyboardMarkup()
-    kb.add(
-        InlineKeyboardButton("Gemini 3.5 Flash", callback_data="translation:Gemini 3.5"),
-        InlineKeyboardButton("✏️ Другое", callback_data="translation:other")
-    )
-    return kb
-
-
-def filter_keyboard():
-    kb = InlineKeyboardMarkup()
-    kb.add(
-        InlineKeyboardButton("ChatGPT Web", callback_data="filter:chatgpt"),
-        InlineKeyboardButton("DeepSeek", callback_data="filter:deepseek"),
-        InlineKeyboardButton("❌ Нет", callback_data="filter:none")
-    )
-    return kb
-
-
-def status_keyboard():
-    kb = InlineKeyboardMarkup()
-    kb.add(
-        InlineKeyboardButton("в процессе", callback_data="status:process"),
-        InlineKeyboardButton("завершен", callback_data="status:done"),
-        InlineKeyboardButton("брошен", callback_data="status:dropped")
-    )
-    return kb
-
 
 # ================= FORMAT =================
 
@@ -179,124 +146,130 @@ def format_files_post(glossary, translation, filter_choice):
         text += f"\n🧹 Фильтр: {filter_choice}"
     return text
 
+# ================= CALLBACK / LOGIC =================
+
+def handle_update(update):
+    try:
+
+        # ========== MESSAGE ==========
+        if update.message:
+
+            chat_id = update.message.chat.id
+
+            if update.message.document:
+
+                file_info = bot.get_file(update.message.document.file_id)
+                file_content = bot.download_file(file_info.file_path)
+
+                name = update.message.document.file_name
+                path = f"/tmp/{uuid.uuid4().hex}{os.path.splitext(name)[1]}"
+
+                with open(path, "wb") as f:
+                    f.write(file_content)
+
+                user_data.setdefault(chat_id, {
+                    "epub": None,
+                    "cover": None,
+                    "description": ""
+                })
+
+                d = user_data[chat_id]
+
+                if name.endswith(".epub"):
+                    d["epub"] = path
+                    d["cover"] = extract_cover(path)
+                    bot.send_message(chat_id, "📚 EPUB принят")
+
+                elif name.endswith(".txt"):
+                    with open(path, "r", encoding="utf-8") as f:
+                        d["description"] = f.read()
+                    bot.send_message(chat_id, "📝 TXT принят")
+
+        # ========== CALLBACK ==========
+        if update.callback_query:
+
+            cb = update.callback_query
+            chat_id = cb.message.chat.id
+            category, value = cb.data.split(":")
+
+            bot.answer_callback_query(cb.id)
+
+            user_choices.setdefault(chat_id, {})
+
+            if category == "glossary":
+                user_choices[chat_id]["glossary"] = value
+                bot.send_message(chat_id, "Перевод:", reply_markup=InlineKeyboardMarkup().add(
+                    InlineKeyboardButton("Gemini", callback_data="translation:gemini")
+                ))
+
+            elif category == "translation":
+                user_choices[chat_id]["translation"] = value
+                bot.send_message(chat_id, "Фильтр:", reply_markup=InlineKeyboardMarkup().add(
+                    InlineKeyboardButton("ChatGPT", callback_data="filter:chatgpt")
+                ))
+
+            elif category == "filter":
+                user_choices[chat_id]["filter"] = value
+                bot.send_message(chat_id, "Статус:", reply_markup=InlineKeyboardMarkup().add(
+                    InlineKeyboardButton("done", callback_data="status:done")
+                ))
+
+            elif category == "status":
+
+                user_choices[chat_id]["status"] = value
+
+                data = user_data.get(chat_id)
+                choices = user_choices.get(chat_id)
+
+                if not data or not data.get("epub"):
+                    bot.send_message(chat_id, "❌ EPUB нет")
+                    return
+
+                epub_path = data["epub"]
+                cover = data["cover"]
+
+                info = parse_info(data["description"])
+                chapters = count_chapters_from_epub(epub_path)
+                annotation = extract_annotation_from_epub(epub_path)
+
+                if cover:
+                    bot.send_photo(CHANNEL_ID, open(cover, "rb"))
+
+                bot.send_message(
+                    CHANNEL_ID,
+                    format_text_post(info, chapters, value, annotation),
+                    parse_mode="HTML"
+                )
+
+                bot.send_document(
+                    CHANNEL_ID,
+                    open(epub_path, "rb"),
+                    caption=format_files_post(
+                        choices.get("glossary"),
+                        choices.get("translation"),
+                        choices.get("filter")
+                    )
+                )
+
+                user_data.pop(chat_id, None)
+                user_choices.pop(chat_id, None)
+
+                bot.send_message(chat_id, "✅ опубликовано")
+
+    except Exception as e:
+        print("ERROR:", e)
 
 # ================= WEBHOOK =================
 
 @app.route("/webhook", methods=["POST"])
 def webhook():
-    update = telebot.types.Update.de_json(request.get_data().decode("utf-8"))
+    try:
+        json_str = request.get_data().decode("utf-8")
+        update = telebot.types.Update.de_json(json_str)
 
-    # ================= FILES =================
-    if update.message and update.message.document:
+        handle_update(update)
 
-        chat_id = update.message.chat.id
-
-        file_info = bot.get_file(update.message.document.file_id)
-        file_content = bot.download_file(file_info.file_path)
-
-        original_name = update.message.document.file_name
-        ext = os.path.splitext(original_name)[1]
-        path = f"/tmp/{uuid.uuid4().hex}{ext}"
-
-        with open(path, "wb") as f:
-            f.write(file_content)
-
-        user_data.setdefault(chat_id, {
-            "epub": None,
-            "cover": None,
-            "description": ""
-        })
-
-        d = user_data[chat_id]
-
-        if original_name.lower().endswith(".epub"):
-            d["epub"] = path
-            d["cover"] = extract_cover(path)
-            bot.send_message(chat_id, "📚 EPUB принят + обложка извлечена")
-
-        elif original_name.lower().endswith(".txt"):
-            with open(path, "r", encoding="utf-8") as f:
-                d["description"] = f.read()
-            bot.send_message(chat_id, "📝 описание сохранено")
-
-        return "OK", 200
-
-
-    # ================= CALLBACK =================
-    if update.callback_query:
-
-        cb = update.callback_query
-        chat_id = cb.message.chat.id
-        category, value = cb.data.split(":")
-
-        bot.answer_callback_query(cb.id)
-
-        user_choices.setdefault(chat_id, {})
-
-        if category == "glossary":
-            user_choices[chat_id]["glossary"] = value
-            bot.send_message(chat_id, "Выбор перевода:", reply_markup=translation_keyboard())
-
-        elif category == "translation":
-            user_choices[chat_id]["translation"] = value
-            bot.send_message(chat_id, "Фильтр:", reply_markup=filter_keyboard())
-
-        elif category == "filter":
-            user_choices[chat_id]["filter"] = value
-            bot.send_message(chat_id, "Статус:", reply_markup=status_keyboard())
-
-        elif category == "status":
-
-            user_choices[chat_id]["status"] = value
-
-            choices = user_choices[chat_id]
-            data = user_data.get(chat_id)
-
-            if not data or not data.get("epub"):
-                bot.send_message(chat_id, "❌ EPUB не найден")
-                return "OK", 200
-
-            epub_path = data["epub"]
-            cover = data["cover"]
-
-            info = parse_info(data["description"]) if data["description"] else {}
-
-            chapters = count_chapters_from_epub(epub_path)
-            annotation = extract_annotation_from_epub(epub_path)
-
-            # POST 1 cover
-            if cover:
-                with open(cover, "rb") as f:
-                    bot.send_photo(CHANNEL_ID, f)
-
-            # POST 2 text
-            bot.send_message(
-                CHANNEL_ID,
-                format_text_post(info, chapters, value, annotation),
-                parse_mode="HTML"
-            )
-
-            # POST 3 files
-            bot.send_document(
-                CHANNEL_ID,
-                open(epub_path, "rb"),
-                caption=format_files_post(
-                    choices["glossary"],
-                    choices["translation"],
-                    choices.get("filter")
-                )
-            )
-
-            try:
-                os.remove(epub_path)
-                if cover:
-                    os.remove(cover)
-            except:
-                pass
-
-            user_data.pop(chat_id, None)
-            user_choices.pop(chat_id, None)
-
-            bot.send_message(chat_id, "✅ опубликовано")
+    except Exception as e:
+        print("WEBHOOK ERROR:", e)
 
     return "OK", 200
