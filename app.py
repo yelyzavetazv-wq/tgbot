@@ -218,8 +218,10 @@ def format_text(info, chapters, status, annotation):
 🇬🇧 {info.get('title_en', '')}
 🌐 {info.get('title_original', '')}
 
-✍️ {info.get('author', '')}
+✍️ Автор: {info.get('author', '')}
+
 📊 Глав: {chapters}
+
 📌 Статус: {status}
 """
 
@@ -405,8 +407,8 @@ def publish_to_channel(chat_id):
         with open(cover, "rb") as img:
             bot.send_photo(CHANNEL_ID, img, timeout=60)
 
-    # Пост 2: текст
-    bot.send_message(CHANNEL_ID, post2, parse_mode="HTML")
+    # Пост 2: текст без предпросмотра ссылок
+    bot.send_message(CHANNEL_ID, post2, parse_mode="HTML", disable_web_page_preview=True)
 
     # Пост 3: файлы с подписью
     if epub_path:
