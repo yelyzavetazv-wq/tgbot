@@ -8,6 +8,10 @@ import time
 from ebooklib import epub, ITEM_COVER, ITEM_IMAGE
 from bs4 import BeautifulSoup
 
+@app.route("/")
+def index():
+    return "Bot is running!"
+
 # ================= CONFIG =================
 
 TOKEN = os.getenv("TOKEN")
