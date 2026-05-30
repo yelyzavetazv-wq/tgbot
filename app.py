@@ -9,7 +9,12 @@ from ebooklib import epub, ITEM_COVER, ITEM_IMAGE
 from bs4 import BeautifulSoup
 
 # ================= CONFIG =================
-TOKEN = "PUT_YOUR_TOKEN_HERE"
+
+TOKEN = os.getenv("TOKEN")
+
+if not TOKEN or ":" not in TOKEN:
+    raise ValueError("TOKEN не загружен или неправильный (проверь Render ENV)")
+
 CHANNEL_ID = "@+PiSTnDvEds9mYjBi"
 
 bot = telebot.TeleBot(TOKEN)
@@ -200,13 +205,11 @@ def webhook():
 
         d = user_data[chat_id]
 
-        # EPUB
         if original_name.lower().endswith(".epub"):
             d["epub"] = path
             d["cover"] = extract_cover(path)
             bot.send_message(chat_id, "📚 EPUB принят + обложка извлечена")
 
-        # TXT
         elif original_name.lower().endswith(".txt"):
             with open(path, "r", encoding="utf-8") as f:
                 d["description"] = f.read()
@@ -280,7 +283,6 @@ def webhook():
                 )
             )
 
-            # cleanup
             try:
                 os.remove(epub_path)
                 if cover:
