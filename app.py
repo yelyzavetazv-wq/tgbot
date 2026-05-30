@@ -67,18 +67,34 @@ def extract_cover(epub_path):
 
 
 def extract_annotation(epub_path):
+    """Извлекает аннотацию из dc:description в OPF файле"""
     try:
-        with zipfile.ZipFile(epub_path, 'r') as z:
-            for name in z.namelist():
-                if name.endswith((".xhtml", ".html")):
-                    with z.open(name) as f:
-                        soup = BeautifulSoup(f.read(), "html.parser")
-                        text = soup.get_text()
-                        if len(text) > 100:
-                            return text[:2000]
-    except:
-        pass
-    return "Описание отсутствует"
+        import zipfile
+        from bs4 import BeautifulSoup
+        
+        with zipfile.ZipFile(epub_path, 'r') as epub_zip:
+            for name in epub_zip.namelist():
+                if name.endswith('.opf'):
+                    with epub_zip.open(name) as f:
+                        content = f.read().decode('utf-8', errors='ignore')
+                        soup = BeautifulSoup(content, 'xml')
+                        
+                        # Ищем dc:description
+                        description = soup.find('dc:description')
+                        if description and description.text:
+                            # Парсим HTML внутри описания
+                            inner_soup = BeautifulSoup(description.text, 'html.parser')
+                            # Берём текст из всех тегов p
+                            paragraphs = inner_soup.find_all('p')
+                            if paragraphs:
+                                texts = [p.get_text().strip() for p in paragraphs if p.get_text().strip()]
+                                return '\n'.join(texts)[:2000]
+                            # Если нет p, берём весь текст
+                            return description.text.strip()[:2000]
+        return "Описание отсутствует"
+    except Exception as e:
+        print(f"Ошибка парсинга аннотации: {e}")
+        return "Описание отсутствует"
 
 
 def count_chapters(epub_path):
@@ -90,16 +106,20 @@ def count_chapters(epub_path):
 
 
 def extract_tags_from_opf(epub_path):
+    """Извлекает теги из dc:subject в OPF файле"""
     tags = []
     try:
+        import zipfile
+        from bs4 import BeautifulSoup
+        
         with zipfile.ZipFile(epub_path, 'r') as z:
             for name in z.namelist():
                 if name.endswith('.opf'):
                     with z.open(name) as f:
                         content = f.read().decode('utf-8', errors='ignore')
-                        root = ET.fromstring(content)
-                        ns = {'dc': 'http://purl.org/dc/elements/1.1/'}
-                        for subject in root.findall('.//dc:subject', ns):
+                        soup = BeautifulSoup(content, 'xml')
+                        
+                        for subject in soup.find_all('dc:subject'):
                             if subject.text:
                                 tags.append(subject.text.strip())
                     break
@@ -203,7 +223,8 @@ def format_text(info, chapters, status, annotation):
 📌 Статус: {status}
 """
     if info.get('tags'):
-        text += f"🏷️ Теги: {', '.join(info['tags'])}\n"
+        tags_with_hash = ", ".join([f"#{tag}" for tag in info['tags']])
+        text += f"🏷️ Теги: {tags_with_hash}\n"
     
     text += f"""
 📖 Описание:
@@ -233,6 +254,7 @@ def start(message):
 def handle_docs(message):
     file_info = bot.get_file(message.document.file_id)
     file = bot.download_file(file_info.file_path)
+
     name = message.document.file_name
     path = f"/tmp/{uuid.uuid4().hex}_{name}"
 
