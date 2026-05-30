@@ -8,9 +8,7 @@ import time
 from ebooklib import epub, ITEM_COVER, ITEM_IMAGE
 from bs4 import BeautifulSoup
 
-@app.route("/")
-def index():
-    return "Bot is running!"
+
 
 # ================= CONFIG =================
 
@@ -23,7 +21,9 @@ CHANNEL_ID = "@testikmatestikoxuestik"
 
 bot = telebot.TeleBot(TOKEN)
 app = Flask(__name__)
-
+@app.route("/")
+def index():
+    return "Bot is running!"
 user_choices = {}
 user_data = {}
 
