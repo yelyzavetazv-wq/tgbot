@@ -412,12 +412,18 @@ def webhook():
                     
                     # Отправляем файлы с подписью (параметры под последним файлом)
                     all_files = data['epub_files'] + data['fb2_files']
+                    bot.send_message(chat_id, f"DEBUG: всего файлов = {len(all_files)}")
                     for i, file_path in enumerate(all_files):
-                        with open(file_path, 'rb') as f:
-                            if i == len(all_files) - 1:
-                                bot.send_document(CHANNEL_ID, f, caption=post3, timeout=120)
-                            else:
-                                bot.send_document(CHANNEL_ID, f, timeout=120)
+                        bot.send_message(chat_id, f"DEBUG: отправляю файл {i+1} из {len(all_files)}: {os.path.basename(file_path)}")
+                        try:
+                            with open(file_path, 'rb') as f:
+                                if i == len(all_files) - 1:
+                                    bot.send_document(CHANNEL_ID, f, caption=post3, timeout=120)
+                                else:
+                                    bot.send_document(CHANNEL_ID, f, timeout=120)
+                            bot.send_message(chat_id, f"DEBUG: файл {i+1} отправлен успешно")
+                        except Exception as file_error:
+                            bot.send_message(chat_id, f"DEBUG: ошибка при отправке файла {i+1}: {str(file_error)[:100]}")
                     
                     if progress_msg_id:
                         bot.edit_message_text("✅ [▓▓▓▓▓▓▓▓▓▓] 100% - Книга опубликована!", chat_id, progress_msg_id)
