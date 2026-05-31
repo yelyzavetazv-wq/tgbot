@@ -345,8 +345,18 @@ def handle_docs(message):
             bot.send_message(message.chat.id, "📄 DOC получен. Ожидаю description.txt...")
 
     elif name.endswith(".txt"):
-        with open(path, "r", encoding="utf-8") as f:
-            data["txt"] = f.read()
+        try:
+            with open(path, "r", encoding="utf-8") as f:
+                data["txt"] = f.read()
+    
+        except UnicodeDecodeError:
+            try:
+                with open(path, "r", encoding="cp1251") as f:
+                    data["txt"] = f.read()
+    
+            except Exception:
+                with open(path, "r", encoding="utf-8", errors="ignore") as f:
+                    data["txt"] = f.read()
         bot.send_message(message.chat.id, f"✅ Получен description.txt: {name}")
         
         if data.get("epub"):
