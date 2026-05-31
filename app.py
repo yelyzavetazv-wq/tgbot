@@ -8,6 +8,7 @@ import re
 import xml.etree.ElementTree as ET
 import requests
 import shutil
+from werkzeug.utils import secure_filename
 from ebooklib import epub, ITEM_COVER, ITEM_IMAGE
 from bs4 import BeautifulSoup
 from requests.adapters import HTTPAdapter
@@ -283,21 +284,21 @@ def format_files(glossary, translation, filter_choice):
 def start(message):
     bot.send_message(message.chat.id, "📚 Отправьте файлы книги: .epub (обязательно), .fb2, .doc, и файл описания .txt  ")
 
-MAX_FILE_SIZE = 100 * 1024 * 1024  # 100 МБ
-
-if message.document.file_size > MAX_FILE_SIZE:
-    bot.send_message(
-        message.chat.id,
-        f"❌ Файл слишком большой.Максимальный размер: 100 МБ."
-    )
-    return
-
+    
 @bot.message_handler(content_types=["document"])
 def handle_docs(message):
+    MAX_FILE_SIZE = 100 * 1024 * 1024
+
+    if message.document.file_size > MAX_FILE_SIZE:
+        bot.send_message(
+            message.chat.id,
+            "❌ Файл слишком большой. Максимальный размер: 100 МБ."
+        )
+        return
     file_info = bot.get_file(message.document.file_id)
     file = bot.download_file(file_info.file_path)
 
-    name = message.document.file_name
+    name = secure_filename(message.document.file_name)
     path = f"/tmp/{uuid.uuid4().hex}_{name}"
 
     with open(path, "wb") as f:
