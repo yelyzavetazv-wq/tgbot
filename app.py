@@ -11,6 +11,7 @@ import shutil
 from werkzeug.utils import secure_filename
 from ebooklib import epub, ITEM_COVER, ITEM_IMAGE
 from bs4 import BeautifulSoup
+from html import escape
 from requests.adapters import HTTPAdapter
 from urllib3.util.retry import Retry
 
@@ -263,7 +264,7 @@ def format_text(info, chapters, status, annotation):
     text += f"""
     
 📖 Описание:
-<blockquote>{annotation}</blockquote>
+<blockquote>{escape(annotation)}</blockquote>
 """
     for link in info.get('links', []):
         text += f"\n🔗 {link}"
