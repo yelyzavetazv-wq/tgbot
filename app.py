@@ -283,6 +283,14 @@ def format_files(glossary, translation, filter_choice):
 def start(message):
     bot.send_message(message.chat.id, "📚 Отправьте файлы книги: .epub (обязательно), .fb2, .doc, и файл описания .txt  ")
 
+MAX_FILE_SIZE = 100 * 1024 * 1024  # 100 МБ
+
+if message.document.file_size > MAX_FILE_SIZE:
+    bot.send_message(
+        message.chat.id,
+        f"❌ Файл слишком большой.Максимальный размер: 100 МБ."
+    )
+    return
 
 @bot.message_handler(content_types=["document"])
 def handle_docs(message):
