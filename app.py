@@ -483,6 +483,39 @@ def publish_to_channel(chat_id):
 
     bot.send_message(chat_id, f"✅ Книга '{info.get('title_ru', 'Без названия')}' опубликована в канале!")
 
+    # ========== ОЧИСТКА ВСЕХ ФАЙЛОВ ==========
+    # Удаляем все файлы, которые были сохранены для этого чата
+    for key in ["epub", "fb2", "doc", "cover"]:
+        file_path = data.get(key)
+        if file_path and os.path.exists(file_path):
+            try:
+                os.remove(file_path)
+                print(f"Удалён файл: {file_path}")
+            except Exception as e:
+                print(f"Ошибка удаления {file_path}: {e}")
+    
+    # Удаляем временные файлы с красивыми именами (если остались)
+    temp_files = [
+        f"/tmp/{info.get('title_ru', 'book')}.epub",
+        f"/tmp/{info.get('title_ru', 'book')}.fb2",
+        f"/tmp/{info.get('title_ru', 'document')}.docx"
+    ]
+    for temp_file in temp_files:
+        if os.path.exists(temp_file):
+            try:
+                os.remove(temp_file)
+            except:
+                pass
+    
+    # Удаляем временную папку (если была)
+    extract_path = data.get("extract_path")
+    if extract_path and os.path.exists(extract_path):
+        try:
+            shutil.rmtree(extract_path)
+        except:
+            pass
+    # ========================================
+
     user_data.pop(chat_id, None)
     user_choices.pop(chat_id, None)
 
