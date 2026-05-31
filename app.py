@@ -7,6 +7,7 @@ import zipfile
 import re
 import xml.etree.ElementTree as ET
 import requests
+import shutil
 from ebooklib import epub, ITEM_COVER, ITEM_IMAGE
 from bs4 import BeautifulSoup
 from requests.adapters import HTTPAdapter
@@ -440,11 +441,22 @@ def publish_to_channel(chat_id):
 
     # Пост 3: файлы с подписью
     if epub_path:
-        with open(epub_path, "rb") as f:
+        # Получаем красивое имя из оригинального названия
+        clean_name = f"{info.get('title_ru', 'book')}.epub"
+        # Создаём временную копию с красивым именем
+        temp_epub = f"/tmp/{clean_name}"
+        shutil.copy2(epub_path, temp_epub)
+        with open(temp_epub, "rb") as f:
             bot.send_document(CHANNEL_ID, f, caption=post3, timeout=180)
+        os.remove(temp_epub)
+
     if fb2_path:
-        with open(fb2_path, "rb") as f:
+        clean_name = f"{info.get('title_ru', 'book')}.fb2"
+        temp_fb2 = f"/tmp/{clean_name}"
+        shutil.copy2(fb2_path, temp_fb2)
+        with open(temp_fb2, "rb") as f:
             bot.send_document(CHANNEL_ID, f, timeout=180)
+        os.remove(temp_fb2)
 
     bot.send_message(chat_id, f"✅ Книга '{info.get('title_ru', 'Без названия')}' опубликована в канале!")
 
