@@ -280,7 +280,7 @@ def format_files(glossary, translation, filter_choice):
 
 @bot.message_handler(commands=["start"])
 def start(message):
-    bot.send_message(message.chat.id, "📚 Бот жив! Отправьте ZIP-архив с книгой (cover, .epub, .fb2, description.txt)")
+    bot.send_message(message.chat.id, "📚 Отправьте файлы книги: .epub (обязательно), .fb2, .doc, и файл описания .txt  ")
 
 
 @bot.message_handler(content_types=["document"])
@@ -298,51 +298,37 @@ def handle_docs(message):
         "epub": None,
         "cover": None,
         "fb2": None,
+        "doc": None,
         "txt": ""
     })
 
     if name.endswith(".epub"):
         data["epub"] = path
         data["cover"] = extract_cover(path)
-        bot.send_message(message.chat.id, "📚 EPUB получен")
-        if data["txt"]:
-            bot.send_message(message.chat.id, "✅ Все файлы получены. Выберите Глоссарий:", reply_markup=glossary_keyboard())
-        else:
-            bot.send_message(message.chat.id, "⏳ Ожидаю description.txt...")
+        bot.send_message(message.chat.id, f"✅ Получен EPUB: {name}")
+        
+        if data.get("epub") and data.get("txt"):
+            bot.send_message(message.chat.id, "📚 Все файлы получены! Выберите Глоссарий:", reply_markup=glossary_keyboard())
+        elif not data.get("txt"):
+            bot.send_message(message.chat.id, "❌ Нет description.txt! Пожалуйста, отправьте TXT файл с описанием.")
 
     elif name.endswith(".fb2"):
         data["fb2"] = path
-        bot.send_message(message.chat.id, "📖 FB2 получен")
+        bot.send_message(message.chat.id, f"✅ Получен FB2: {name}")
+
+    elif name.endswith(".doc") or name.endswith(".docx"):
+        data["doc"] = path
+        bot.send_message(message.chat.id, f"✅ Получен DOC: {name}")
 
     elif name.endswith(".txt"):
         with open(path, "r", encoding="utf-8") as f:
             data["txt"] = f.read()
-        bot.send_message(message.chat.id, "📝 description.txt получен")
-        if data["epub"]:
-            bot.send_message(message.chat.id, "✅ Все файлы получены. Выберите Глоссарий:", reply_markup=glossary_keyboard())
+        bot.send_message(message.chat.id, f"✅ Получен description.txt: {name}")
+        
+        if data.get("epub"):
+            bot.send_message(message.chat.id, "📚 Все файлы получены! Выберите Глоссарий:", reply_markup=glossary_keyboard())
         else:
-            bot.send_message(message.chat.id, "⏳ Ожидаю EPUB...")
-
-    elif name.endswith(".zip"):
-        bot.send_message(message.chat.id, "📦 Распаковываю ZIP...")
-        extract_path = f"/tmp/{uuid.uuid4().hex}"
-        with zipfile.ZipFile(path, 'r') as z:
-            z.extractall(extract_path)
-        
-        for root, dirs, files in os.walk(extract_path):
-            for f in files:
-                full_path = os.path.join(root, f)
-                if f.lower().endswith('.epub'):
-                    data["epub"] = full_path
-                    data["cover"] = extract_cover(full_path)
-                elif f.lower().endswith('.fb2'):
-                    data["fb2"] = full_path
-                elif f.lower().endswith('.txt'):
-                    with open(full_path, 'r', encoding='utf-8') as txt_file:
-                        data["txt"] = txt_file.read()
-        
-        bot.send_message(message.chat.id, "✅ ZIP распакован. Выберите Глоссарий:", reply_markup=glossary_keyboard())
-
+            bot.send_message(message.chat.id, "❌ Нет EPUB файла! Пожалуйста, отправьте EPUB файл.")
 
 # ================= CALLBACK =================
 
@@ -416,6 +402,7 @@ def publish_to_channel(chat_id):
 
     epub_path = data.get("epub")
     fb2_path = data.get("fb2")
+    doc_path = data.get("doc")
     txt = data.get("txt", "")
     cover = data.get("cover")
 
@@ -436,27 +423,45 @@ def publish_to_channel(chat_id):
         with open(cover, "rb") as img:
             bot.send_photo(CHANNEL_ID, img, timeout=60)
 
-    # Пост 2: текст без предпросмотра ссылок
+    # Пост 2: текст
     bot.send_message(CHANNEL_ID, post2, parse_mode="HTML", disable_web_page_preview=True)
 
-    # Пост 3: файлы с подписью
+    # Пост 3: файлы с красивыми именами
     if epub_path:
-        # Получаем красивое имя из оригинального названия
         clean_name = f"{info.get('title_ru', 'book')}.epub"
-        # Создаём временную копию с красивым именем
         temp_epub = f"/tmp/{clean_name}"
         shutil.copy2(epub_path, temp_epub)
         with open(temp_epub, "rb") as f:
             bot.send_document(CHANNEL_ID, f, caption=post3, timeout=180)
         os.remove(temp_epub)
+    elif fb2_path:
+        # Если нет EPUB, но есть FB2, подпись к FB2
+        clean_name = f"{info.get('title_ru', 'book')}.fb2"
+        temp_fb2 = f"/tmp/{clean_name}"
+        shutil.copy2(fb2_path, temp_fb2)
+        with open(temp_fb2, "rb") as f:
+            bot.send_document(CHANNEL_ID, f, caption=post3, timeout=180)
+        os.remove(temp_fb2)
+    else:
+        # Если нет ни EPUB, ни FB2, отправляем подпись отдельно
+        bot.send_message(CHANNEL_ID, post3)
 
-    if fb2_path:
+    # Отправляем остальные файлы (если есть)
+    if fb2_path and epub_path:
         clean_name = f"{info.get('title_ru', 'book')}.fb2"
         temp_fb2 = f"/tmp/{clean_name}"
         shutil.copy2(fb2_path, temp_fb2)
         with open(temp_fb2, "rb") as f:
             bot.send_document(CHANNEL_ID, f, timeout=180)
         os.remove(temp_fb2)
+
+    if doc_path:
+        clean_name = f"{info.get('title_ru', 'document')}.docx"
+        temp_doc = f"/tmp/{clean_name}"
+        shutil.copy2(doc_path, temp_doc)
+        with open(temp_doc, "rb") as f:
+            bot.send_document(CHANNEL_ID, f, timeout=180)
+        os.remove(temp_doc)
 
     bot.send_message(chat_id, f"✅ Книга '{info.get('title_ru', 'Без названия')}' опубликована в канале!")
 
