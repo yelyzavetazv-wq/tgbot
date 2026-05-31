@@ -409,115 +409,151 @@ def set_filter(message, chat_id):
     user_choices[chat_id]["filter"] = message.text
     bot.send_message(chat_id, "📌 Выберите Статус:", reply_markup=status_keyboard())
 
+def cleanup_user(chat_id):
+    data = user_data.get(chat_id, {})
 
-def publish_to_channel(chat_id):
-    data = user_data.get(chat_id)
-    choices = user_choices.get(chat_id)
-
-    if not data or not choices:
-        bot.send_message(chat_id, "❌ Ошибка: данные не найдены")
-        return
-
-    epub_path = data.get("epub")
-    fb2_path = data.get("fb2")
-    doc_path = data.get("doc")
-    txt = data.get("txt", "")
-    cover = data.get("cover")
-
-    info = parse_info(txt, epub_path)
-    chapters = count_chapters(epub_path) if epub_path else "?"
-    annotation = extract_annotation(epub_path) if epub_path else "Описание отсутствует"
-
-    glossary = choices.get("glossary", "?")
-    translation = choices.get("translation", "?")
-    filter_choice = choices.get("filter", "none")
-    status = choices.get("status", "?")
-
-    post2 = format_text(info, chapters, status, annotation)
-    post3 = format_files(glossary, translation, filter_choice)
-
-    # Пост 1: обложка
-    if cover:
-        with open(cover, "rb") as img:
-            bot.send_photo(CHANNEL_ID, img, timeout=60)
-
-    # Пост 2: текст
-    bot.send_message(CHANNEL_ID, post2, parse_mode="HTML", disable_web_page_preview=True)
-
-    # Пост 3: файлы с красивыми именами
-    if epub_path:
-        clean_name = f"{info.get('title_ru', 'book')}.epub"
-        temp_epub = f"/tmp/{clean_name}"
-        shutil.copy2(epub_path, temp_epub)
-        with open(temp_epub, "rb") as f:
-            bot.send_document(CHANNEL_ID, f, caption=post3, timeout=180)
-        os.remove(temp_epub)
-    elif fb2_path:
-        # Если нет EPUB, но есть FB2, подпись к FB2
-        clean_name = f"{info.get('title_ru', 'book')}.fb2"
-        temp_fb2 = f"/tmp/{clean_name}"
-        shutil.copy2(fb2_path, temp_fb2)
-        with open(temp_fb2, "rb") as f:
-            bot.send_document(CHANNEL_ID, f, caption=post3, timeout=180)
-        os.remove(temp_fb2)
-    else:
-        # Если нет ни EPUB, ни FB2, отправляем подпись отдельно
-        bot.send_message(CHANNEL_ID, post3)
-
-    # Отправляем остальные файлы (если есть)
-    if fb2_path and epub_path:
-        clean_name = f"{info.get('title_ru', 'book')}.fb2"
-        temp_fb2 = f"/tmp/{clean_name}"
-        shutil.copy2(fb2_path, temp_fb2)
-        with open(temp_fb2, "rb") as f:
-            bot.send_document(CHANNEL_ID, f, timeout=180)
-        os.remove(temp_fb2)
-
-    if doc_path:
-        clean_name = f"{info.get('title_ru', 'document')}.docx"
-        temp_doc = f"/tmp/{clean_name}"
-        shutil.copy2(doc_path, temp_doc)
-        with open(temp_doc, "rb") as f:
-            bot.send_document(CHANNEL_ID, f, timeout=180)
-        os.remove(temp_doc)
-
-    bot.send_message(chat_id, f"✅ Книга '{info.get('title_ru', 'Без названия')}' опубликована в канале!")
-
-    # ========== ОЧИСТКА ВСЕХ ФАЙЛОВ ==========
-    # Удаляем все файлы, которые были сохранены для этого чата
+    # Удаляем файлы пользователя
     for key in ["epub", "fb2", "doc", "cover"]:
         file_path = data.get(key)
         if file_path and os.path.exists(file_path):
             try:
                 os.remove(file_path)
-                print(f"Удалён файл: {file_path}")
             except Exception as e:
                 print(f"Ошибка удаления {file_path}: {e}")
-    
-    # Удаляем временные файлы с красивыми именами (если остались)
-    temp_files = [
-        f"/tmp/{info.get('title_ru', 'book')}.epub",
-        f"/tmp/{info.get('title_ru', 'book')}.fb2",
-        f"/tmp/{info.get('title_ru', 'document')}.docx"
-    ]
-    for temp_file in temp_files:
-        if os.path.exists(temp_file):
-            try:
-                os.remove(temp_file)
-            except:
-                pass
-    
-    # Удаляем временную папку (если была)
+
+    # Удаляем временную папку
     extract_path = data.get("extract_path")
     if extract_path and os.path.exists(extract_path):
         try:
             shutil.rmtree(extract_path)
-        except:
-            pass
-    # ========================================
+        except Exception as e:
+            print(f"Ошибка удаления папки {extract_path}: {e}")
 
     user_data.pop(chat_id, None)
     user_choices.pop(chat_id, None)
+
+def publish_to_channel(chat_id):
+    try:
+        data = user_data.get(chat_id)
+        choices = user_choices.get(chat_id)
+
+        if not data or not choices:
+            bot.send_message(chat_id, "❌ Ошибка: данные не найдены")
+            return
+
+        epub_path = data.get("epub")
+        fb2_path = data.get("fb2")
+        doc_path = data.get("doc")
+        txt = data.get("txt", "")
+        cover = data.get("cover")
+
+        info = parse_info(txt, epub_path)
+        chapters = count_chapters(epub_path) if epub_path else "?"
+        annotation = extract_annotation(epub_path) if epub_path else "Описание отсутствует"
+
+        glossary = choices.get("glossary", "?")
+        translation = choices.get("translation", "?")
+        filter_choice = choices.get("filter", "none")
+        status = choices.get("status", "?")
+
+        post2 = format_text(info, chapters, status, annotation)
+        post3 = format_files(glossary, translation, filter_choice)
+
+        if cover:
+            with open(cover, "rb") as img:
+                bot.send_photo(CHANNEL_ID, img, timeout=60)
+
+        bot.send_message(
+            CHANNEL_ID,
+            post2,
+            parse_mode="HTML",
+            disable_web_page_preview=True
+        )
+
+        if epub_path:
+            clean_name = f"{info.get('title_ru', 'book')}.epub"
+            temp_epub = f"/tmp/{clean_name}"
+
+            shutil.copy2(epub_path, temp_epub)
+
+            with open(temp_epub, "rb") as f:
+                bot.send_document(
+                    CHANNEL_ID,
+                    f,
+                    caption=post3,
+                    timeout=180
+                )
+
+            if os.path.exists(temp_epub):
+                os.remove(temp_epub)
+
+        elif fb2_path:
+            clean_name = f"{info.get('title_ru', 'book')}.fb2"
+            temp_fb2 = f"/tmp/{clean_name}"
+
+            shutil.copy2(fb2_path, temp_fb2)
+
+            with open(temp_fb2, "rb") as f:
+                bot.send_document(
+                    CHANNEL_ID,
+                    f,
+                    caption=post3,
+                    timeout=180
+                )
+
+            if os.path.exists(temp_fb2):
+                os.remove(temp_fb2)
+
+        else:
+            bot.send_message(CHANNEL_ID, post3)
+
+        if fb2_path and epub_path:
+            clean_name = f"{info.get('title_ru', 'book')}.fb2"
+            temp_fb2 = f"/tmp/{clean_name}"
+
+            shutil.copy2(fb2_path, temp_fb2)
+
+            with open(temp_fb2, "rb") as f:
+                bot.send_document(
+                    CHANNEL_ID,
+                    f,
+                    timeout=180
+                )
+
+            if os.path.exists(temp_fb2):
+                os.remove(temp_fb2)
+
+        if doc_path:
+            clean_name = f"{info.get('title_ru', 'document')}.docx"
+            temp_doc = f"/tmp/{clean_name}"
+
+            shutil.copy2(doc_path, temp_doc)
+
+            with open(temp_doc, "rb") as f:
+                bot.send_document(
+                    CHANNEL_ID,
+                    f,
+                    timeout=180
+                )
+
+            if os.path.exists(temp_doc):
+                os.remove(temp_doc)
+
+        bot.send_message(
+            chat_id,
+            f"✅ Книга '{info.get('title_ru', 'Без названия')}' опубликована в канале!"
+        )
+
+    except Exception as e:
+        print(f"Ошибка публикации: {e}")
+
+        bot.send_message(
+            chat_id,
+            f"❌ Ошибка публикации:\n{e}"
+        )
+
+    finally:
+        cleanup_user(chat_id)
 
 
 # ================= START =================
