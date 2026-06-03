@@ -23,7 +23,7 @@ session.mount('https://', HTTPAdapter(max_retries=retries))
 # ================= CONFIG =================
 
 TOKEN = os.getenv("TOKEN")
-CHANNEL_ID = "@testikmatestikoxuestik"
+CHANNEL_ID = "@my_ff_translate"
 
 if not TOKEN or ":" not in TOKEN:
     raise Exception("TOKEN not set")
