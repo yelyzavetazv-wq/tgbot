@@ -318,11 +318,9 @@ def handle_docs(message):
         data["cover"] = extract_cover(path)
         bot.send_message(message.chat.id, f"✅ Получен EPUB: {name}")
         
-        # Проверяем наличие всех файлов
-        if data.get("epub") and data.get("txt") and (data.get("fb2") or data.get("doc")):
+        # Проверяем: нужен только EPUB + TXT
+        if data.get("epub") and data.get("txt"):
             bot.send_message(message.chat.id, "📚 Все файлы получены! Выберите Глоссарий:", reply_markup=glossary_keyboard())
-        elif data.get("epub") and data.get("txt"):
-            bot.send_message(message.chat.id, "📚 EPUB и TXT получены. Ожидаю FB2 или DOC...")
         elif data.get("epub") and not data.get("txt"):
             # Молчим, ждём TXT
             pass
@@ -331,40 +329,33 @@ def handle_docs(message):
         data["fb2"] = path
         bot.send_message(message.chat.id, f"✅ Получен FB2: {name}")
         
+        # FB2 не обязателен, но если уже есть EPUB и TXT — можно начинать
         if data.get("epub") and data.get("txt"):
-            bot.send_message(message.chat.id, "📚 Все файлы получены! Выберите Глоссарий:", reply_markup=glossary_keyboard())
-        elif data.get("epub") and not data.get("txt"):
-            bot.send_message(message.chat.id, "📄 FB2 получен. Ожидаю description.txt...")
+            bot.send_message(message.chat.id, "📚 Все необходимые файлы получены! Выберите Глоссарий:", reply_markup=glossary_keyboard())
 
     elif name.endswith(".doc") or name.endswith(".docx"):
         data["doc"] = path
         bot.send_message(message.chat.id, f"✅ Получен DOC: {name}")
         
         if data.get("epub") and data.get("txt"):
-            bot.send_message(message.chat.id, "📚 Все файлы получены! Выберите Глоссарий:", reply_markup=glossary_keyboard())
-        elif data.get("epub") and not data.get("txt"):
-            bot.send_message(message.chat.id, "📄 DOC получен. Ожидаю description.txt...")
+            bot.send_message(message.chat.id, "📚 Все необходимые файлы получены! Выберите Глоссарий:", reply_markup=glossary_keyboard())
 
     elif name.endswith(".txt"):
         try:
             with open(path, "r", encoding="utf-8") as f:
                 data["txt"] = f.read()
-    
         except UnicodeDecodeError:
             try:
                 with open(path, "r", encoding="cp1251") as f:
                     data["txt"] = f.read()
-    
             except Exception:
                 with open(path, "r", encoding="utf-8", errors="ignore") as f:
                     data["txt"] = f.read()
+        
         bot.send_message(message.chat.id, f"✅ Получен description.txt: {name}")
         
         if data.get("epub"):
-            if data.get("fb2") or data.get("doc"):
-                bot.send_message(message.chat.id, "📚 Все файлы получены! Выберите Глоссарий:", reply_markup=glossary_keyboard())
-            else:
-                bot.send_message(message.chat.id, "📄 TXT и EPUB получены. Ожидаю FB2 или DOC...")
+            bot.send_message(message.chat.id, "📚 Все файлы получены! Выберите Глоссарий:", reply_markup=glossary_keyboard())
         else:
             bot.send_message(message.chat.id, "❌ Нет EPUB файла! Пожалуйста, отправьте EPUB файл.")
 
