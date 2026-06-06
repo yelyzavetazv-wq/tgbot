@@ -315,8 +315,13 @@ def handle_docs(message):
 
     if name.endswith(".epub"):
         data["epub"] = path
+        data["epub_name"] = message.document.file_name
         data["cover"] = extract_cover(path)
-        bot.send_message(message.chat.id, f"✅ Получен EPUB: {name}")
+    
+        bot.send_message(
+            message.chat.id,
+            f"✅ Получен EPUB: {message.document.file_name}"
+        )
         
         # Проверяем: нужен только EPUB + TXT
         if data.get("epub") and data.get("txt"):
@@ -482,11 +487,11 @@ def publish_to_channel(chat_id):
         )
 
         if epub_path:
-            clean_name = f"{info.get('title_ru', 'book')}.epub"
-            temp_epub = f"/tmp/{clean_name}"
-
+            original_name = data.get("epub_name", "book.epub")
+            temp_epub = f"/tmp/{original_name}"
+        
             shutil.copy2(epub_path, temp_epub)
-
+        
             with open(temp_epub, "rb") as f:
                 bot.send_document(
                     CHANNEL_ID,
@@ -494,7 +499,7 @@ def publish_to_channel(chat_id):
                     caption=post3,
                     timeout=180
                 )
-
+        
             if os.path.exists(temp_epub):
                 os.remove(temp_epub)
 
