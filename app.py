@@ -116,7 +116,7 @@ def count_chapters(epub_path):
                         
                         # Находим все navPoint
                         nav_points = soup.find_all('navPoint')
-                        if nav_points:
+                        if nav_points and len(nav_points) > 0:
                             # Берём последний navPoint
                             last_nav = nav_points[-1]
                             # Ищем текст внутри navLabel
@@ -154,8 +154,8 @@ def extract_tags_from_opf(epub_path):
                             if subject.text:
                                 tags.append(subject.text.strip())
                     break
-    except:
-        pass
+    except Exception as e:
+        print(f"Ошибка извлечения тегов: {e}")
     return tags
 
 
@@ -458,9 +458,14 @@ def publish_to_channel(chat_id):
         txt = data.get("txt", "")
         cover = data.get("cover")
 
+        # EPUB и TXT обязательны
+        if not epub_path or not txt:
+            bot.send_message(chat_id, "❌ Ошибка: отсутствует EPUB или TXT файл")
+            return
+
         info = parse_info(txt, epub_path)
-        chapters = count_chapters(epub_path) if epub_path else "?"
-        annotation = extract_annotation(epub_path) if epub_path else "Описание отсутствует"
+        chapters = count_chapters(epub_path)
+        annotation = extract_annotation(epub_path)
 
         glossary = choices.get("glossary", "?")
         translation = choices.get("translation", "?")
@@ -470,10 +475,12 @@ def publish_to_channel(chat_id):
         post2 = format_text(info, chapters, status, annotation)
         post3 = format_files(glossary, translation, filter_choice)
 
+        # Пост 1: обложка
         if cover:
             with open(cover, "rb") as img:
                 bot.send_photo(CHANNEL_ID, img, timeout=60)
 
+        # Пост 2: текст
         bot.send_message(
             CHANNEL_ID,
             post2,
@@ -481,47 +488,26 @@ def publish_to_channel(chat_id):
             disable_web_page_preview=True
         )
 
-        if epub_path:
-            clean_name = f"{info.get('title_ru', 'book')}.epub"
-            temp_epub = f"/tmp/{clean_name}"
+        # Пост 3: EPUB с подписью
+        clean_name = f"{info.get('title_ru', 'book')}.epub"
+        temp_epub = f"/tmp/{clean_name}"
+        shutil.copy2(epub_path, temp_epub)
 
-            shutil.copy2(epub_path, temp_epub)
+        with open(temp_epub, "rb") as f:
+            bot.send_document(
+                CHANNEL_ID,
+                f,
+                caption=post3,
+                timeout=180
+            )
 
-            with open(temp_epub, "rb") as f:
-                bot.send_document(
-                    CHANNEL_ID,
-                    f,
-                    caption=post3,
-                    timeout=180
-                )
+        if os.path.exists(temp_epub):
+            os.remove(temp_epub)
 
-            if os.path.exists(temp_epub):
-                os.remove(temp_epub)
-
-        elif fb2_path:
+        # Дополнительные файлы (FB2, DOC) без подписи
+        if fb2_path:
             clean_name = f"{info.get('title_ru', 'book')}.fb2"
             temp_fb2 = f"/tmp/{clean_name}"
-
-            shutil.copy2(fb2_path, temp_fb2)
-
-            with open(temp_fb2, "rb") as f:
-                bot.send_document(
-                    CHANNEL_ID,
-                    f,
-                    caption=post3,
-                    timeout=180
-                )
-
-            if os.path.exists(temp_fb2):
-                os.remove(temp_fb2)
-
-        else:
-            bot.send_message(CHANNEL_ID, post3)
-
-        if fb2_path and epub_path:
-            clean_name = f"{info.get('title_ru', 'book')}.fb2"
-            temp_fb2 = f"/tmp/{clean_name}"
-
             shutil.copy2(fb2_path, temp_fb2)
 
             with open(temp_fb2, "rb") as f:
@@ -537,7 +523,6 @@ def publish_to_channel(chat_id):
         if doc_path:
             clean_name = f"{info.get('title_ru', 'document')}.docx"
             temp_doc = f"/tmp/{clean_name}"
-
             shutil.copy2(doc_path, temp_doc)
 
             with open(temp_doc, "rb") as f:
