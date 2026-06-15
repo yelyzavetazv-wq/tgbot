@@ -442,8 +442,8 @@ def callbacks(call):
 
     elif cat == "confirm":
         step_num = int(val)
-        # Продолжаем выполнение с нужного шага
-        continue_publication(chat_id, step_num)
+        # Продолжаем выполнение со СЛЕДУЮЩЕГО шага
+        continue_publication(chat_id, step_num + 1)
 
 
 def set_glossary(message, chat_id):
