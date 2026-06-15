@@ -151,12 +151,15 @@ def extract_tags_from_opf(epub_path):
                         content = f.read().decode('utf-8', errors='ignore')
                         soup = BeautifulSoup(content, 'xml')
                         
-                        for subject in soup.find_all('dc:subject'):
-                            if subject.text:
-                                tags.append(subject.text.strip())
+                        # Безопасный поиск всех dc:subject
+                        subjects = soup.find_all('dc:subject')
+                        if subjects:
+                            for subject in subjects:
+                                if subject and subject.text:
+                                    tags.append(subject.text.strip())
                     break
-    except:
-        pass
+    except Exception as e:
+        print(f"Ошибка извлечения тегов: {e}")
     return tags
 
 
@@ -186,7 +189,11 @@ def parse_info(text, epub_path=None):
             info["author"] = line.split(":", 1)[1].strip()
 
     if epub_path:
-        info["tags"] = extract_tags_from_opf(epub_path)
+        try:
+            info["tags"] = extract_tags_from_opf(epub_path)
+        except Exception as e:
+            print(f"Ошибка при получении тегов: {e}")
+            info["tags"] = []
 
     return info
 
