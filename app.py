@@ -33,6 +33,7 @@ app = Flask(__name__)
 
 user_data = {}
 user_choices = {}
+confirm_step_data = {}  # Хранилище состояния для пошагового выполнения
 
 # ================= HEALTH =================
 
@@ -116,26 +117,20 @@ def count_chapters(epub_path):
                         
                         # Находим все navPoint
                         nav_points = soup.find_all('navPoint')
-                        if not nav_points or len(nav_points) == 0:
-                            return "?"
-                        
-                        # Берём последний navPoint
-                        last_nav = nav_points[-1]
-                        # Ищем текст внутри navLabel
-                        nav_label = last_nav.find('navLabel')
-                        if not nav_label:
-                            return "?"
-                        
-                        text_tag = nav_label.find('text')
-                        if not text_tag or not text_tag.text:
-                            return "?"
-                        
-                        text = text_tag.text
-                        # Ищем число в тексте (например "Глава 376")
-                        match = re.search(r'(\d+)', text)
-                        if match:
-                            return int(match.group(1))
-                    return "?"
+                        if nav_points:
+                            # Берём последний navPoint
+                            last_nav = nav_points[-1]
+                            # Ищем текст внутри navLabel
+                            nav_label = last_nav.find('navLabel')
+                            if nav_label:
+                                text_tag = nav_label.find('text')
+                                if text_tag and text_tag.text:
+                                    text = text_tag.text
+                                    # Ищем число в тексте (например "Глава 376")
+                                    match = re.search(r'(\d+)', text)
+                                    if match:
+                                        return int(match.group(1))
+                    break
         return "?"
     except Exception as e:
         print(f"Ошибка подсчёта глав: {e}")
@@ -244,6 +239,13 @@ def status_keyboard():
         InlineKeyboardButton("брошен", callback_data="status:брошен"),
         row_width=1
     )
+    return kb
+
+
+def continue_keyboard(step_num):
+    """Клавиатура с кнопкой Продолжить"""
+    kb = InlineKeyboardMarkup()
+    kb.add(InlineKeyboardButton("✅ Продолжить", callback_data=f"confirm:{step_num}"))
     return kb
 
 
@@ -365,6 +367,32 @@ def handle_docs(message):
         else:
             bot.send_message(message.chat.id, "❌ Нет EPUB файла! Пожалуйста, отправьте EPUB файл.")
 
+
+def ask_confirmation(chat_id, step_num, step_name, total_steps, data_to_save=None):
+    """Отправляет сообщение с кнопкой Продолжить и сохраняет данные для следующего шага"""
+    if data_to_save:
+        confirm_step_data[chat_id] = {
+            "step": step_num,
+            "total": total_steps,
+            "data": data_to_save
+        }
+    else:
+        confirm_step_data[chat_id] = {
+            "step": step_num,
+            "total": total_steps,
+            "data": {}
+        }
+    
+    keyboard = InlineKeyboardMarkup()
+    keyboard.add(InlineKeyboardButton("✅ Продолжить", callback_data=f"confirm:{step_num}"))
+    
+    bot.send_message(
+        chat_id,
+        f"🔍 Шаг {step_num}/{total_steps}: {step_name}\n\nНажмите «Продолжить», чтобы перейти к следующему шагу.",
+        reply_markup=keyboard
+    )
+
+
 # ================= CALLBACK =================
 
 @bot.callback_query_handler(func=lambda call: True)
@@ -409,7 +437,13 @@ def callbacks(call):
 
     elif cat == "status":
         user_choices[chat_id]["status"] = val
-        publish_to_channel(chat_id)
+        # Начинаем пошаговую публикацию с шага 1
+        start_step_publication(chat_id)
+
+    elif cat == "confirm":
+        step_num = int(val)
+        # Продолжаем выполнение с нужного шага
+        continue_publication(chat_id, step_num)
 
 
 def set_glossary(message, chat_id):
@@ -425,6 +459,208 @@ def set_translation(message, chat_id):
 def set_filter(message, chat_id):
     user_choices[chat_id]["filter"] = message.text
     bot.send_message(chat_id, "📌 Выберите Статус:", reply_markup=status_keyboard())
+
+
+def start_step_publication(chat_id):
+    """Начинает пошаговую публикацию"""
+    step_data = confirm_step_data.get(chat_id, {})
+    step_data["step"] = 1
+    step_data["total"] = 12
+    confirm_step_data[chat_id] = step_data
+    continue_publication(chat_id, 1)
+
+
+def continue_publication(chat_id, current_step):
+    """Продолжает публикацию с указанного шага"""
+    step_info = confirm_step_data.get(chat_id, {})
+    total = step_info.get("total", 12)
+    
+    try:
+        data = user_data.get(chat_id)
+        choices = user_choices.get(chat_id)
+        
+        if not data or not choices:
+            bot.send_message(chat_id, "❌ Ошибка: данные не найдены")
+            return
+        
+        epub_path = data.get("epub")
+        fb2_path = data.get("fb2")
+        doc_path = data.get("doc")
+        txt = data.get("txt", "")
+        cover = data.get("cover")
+        
+        # ШАГ 1: Получение данных
+        if current_step == 1:
+            ask_confirmation(chat_id, 1, "Получение данных пользователя", total, {
+                "epub_path": epub_path,
+                "fb2_path": fb2_path,
+                "doc_path": doc_path,
+                "txt": txt,
+                "cover": cover
+            })
+            return
+        
+        # ШАГ 2: Проверка наличия EPUB и TXT
+        elif current_step == 2:
+            if not epub_path:
+                bot.send_message(chat_id, "❌ Ошибка: отсутствует EPUB файл")
+                return
+            if not txt:
+                bot.send_message(chat_id, "❌ Ошибка: отсутствует TXT файл с описанием")
+                return
+            ask_confirmation(chat_id, 2, f"Проверка файлов: EPUB и TXT найдены", total)
+            return
+        
+        # ШАГ 3: Парсинг информации
+        elif current_step == 3:
+            info = parse_info(txt, epub_path)
+            title = info.get('title_ru', 'Без названия')[:50]
+            confirm_step_data[chat_id]["info"] = info
+            ask_confirmation(chat_id, 3, f"Парсинг информации. Название: {title}", total)
+            return
+        
+        # ШАГ 4: Подсчёт глав
+        elif current_step == 4:
+            info = confirm_step_data[chat_id].get("info", {})
+            chapters = count_chapters(epub_path) if epub_path else "?"
+            confirm_step_data[chat_id]["chapters"] = chapters
+            ask_confirmation(chat_id, 4, f"Подсчёт глав. Результат: {chapters}", total)
+            return
+        
+        # ШАГ 5: Извлечение аннотации
+        elif current_step == 5:
+            annotation = extract_annotation(epub_path) if epub_path else "Описание отсутствует"
+            confirm_step_data[chat_id]["annotation"] = annotation
+            ask_confirmation(chat_id, 5, f"Извлечение аннотации. Длина: {len(annotation)} символов", total)
+            return
+        
+        # ШАГ 6: Получение выбранных параметров
+        elif current_step == 6:
+            glossary = choices.get("glossary", "?")
+            translation = choices.get("translation", "?")
+            filter_choice = choices.get("filter", "none")
+            status = choices.get("status", "?")
+            confirm_step_data[chat_id]["glossary"] = glossary
+            confirm_step_data[chat_id]["translation"] = translation
+            confirm_step_data[chat_id]["filter_choice"] = filter_choice
+            confirm_step_data[chat_id]["status"] = status
+            ask_confirmation(chat_id, 6, f"Параметры: Глоссарий={glossary[:20]}, Перевод={translation[:20]}, Статус={status}", total)
+            return
+        
+        # ШАГ 7: Форматирование постов
+        elif current_step == 7:
+            info = confirm_step_data[chat_id].get("info", {})
+            chapters = confirm_step_data[chat_id].get("chapters", "?")
+            status = confirm_step_data[chat_id].get("status", "?")
+            annotation = confirm_step_data[chat_id].get("annotation", "Описание отсутствует")
+            glossary = confirm_step_data[chat_id].get("glossary", "?")
+            translation = confirm_step_data[chat_id].get("translation", "?")
+            filter_choice = confirm_step_data[chat_id].get("filter_choice", "none")
+            
+            post2 = format_text(info, chapters, status, annotation)
+            post3 = format_files(glossary, translation, filter_choice)
+            confirm_step_data[chat_id]["post2"] = post2
+            confirm_step_data[chat_id]["post3"] = post3
+            ask_confirmation(chat_id, 7, f"Форматирование постов завершено", total)
+            return
+        
+        # ШАГ 8: Отправка обложки
+        elif current_step == 8:
+            cover_path = step_info.get("data", {}).get("cover", cover)
+            if cover_path:
+                with open(cover_path, "rb") as img:
+                    bot.send_photo(CHANNEL_ID, img, timeout=60)
+                bot.send_message(chat_id, "✅ Обложка отправлена в канал")
+            else:
+                bot.send_message(chat_id, "⚠️ Обложка не найдена")
+            ask_confirmation(chat_id, 8, "Отправка обложки", total)
+            return
+        
+        # ШАГ 9: Отправка текста
+        elif current_step == 9:
+            post2 = confirm_step_data[chat_id].get("post2", "")
+            if post2:
+                bot.send_message(
+                    CHANNEL_ID,
+                    post2,
+                    parse_mode="HTML",
+                    disable_web_page_preview=True
+                )
+                bot.send_message(chat_id, "✅ Текст отправлен в канал")
+            else:
+                bot.send_message(chat_id, "❌ Текст не сформирован")
+            ask_confirmation(chat_id, 9, "Отправка текста", total)
+            return
+        
+        # ШАГ 10: Подготовка EPUB и подписи
+        elif current_step == 10:
+            info = confirm_step_data[chat_id].get("info", {})
+            post3 = confirm_step_data[chat_id].get("post3", "")
+            clean_name = f"{info.get('title_ru', 'book')}.epub"
+            temp_epub = f"/tmp/{clean_name}"
+            shutil.copy2(epub_path, temp_epub)
+            confirm_step_data[chat_id]["temp_epub"] = temp_epub
+            confirm_step_data[chat_id]["temp_epub_name"] = clean_name
+            ask_confirmation(chat_id, 10, f"Подготовка EPUB (имя: {clean_name})", total)
+            return
+        
+        # ШАГ 11: Отправка EPUB и дополнительных файлов
+        elif current_step == 11:
+            post3 = confirm_step_data[chat_id].get("post3", "")
+            temp_epub = confirm_step_data[chat_id].get("temp_epub")
+            
+            if temp_epub and os.path.exists(temp_epub):
+                with open(temp_epub, "rb") as f:
+                    bot.send_document(
+                        CHANNEL_ID,
+                        f,
+                        caption=post3,
+                        timeout=180
+                    )
+                bot.send_message(chat_id, "✅ EPUB с подписью отправлен в канал")
+                os.remove(temp_epub)
+            
+            # Дополнительные файлы
+            if fb2_path:
+                info = confirm_step_data[chat_id].get("info", {})
+                clean_name = f"{info.get('title_ru', 'book')}.fb2"
+                temp_fb2 = f"/tmp/{clean_name}"
+                shutil.copy2(fb2_path, temp_fb2)
+                with open(temp_fb2, "rb") as f:
+                    bot.send_document(CHANNEL_ID, f, timeout=180)
+                bot.send_message(chat_id, "✅ FB2 отправлен")
+                os.remove(temp_fb2)
+            
+            if doc_path:
+                info = confirm_step_data[chat_id].get("info", {})
+                clean_name = f"{info.get('title_ru', 'document')}.docx"
+                temp_doc = f"/tmp/{clean_name}"
+                shutil.copy2(doc_path, temp_doc)
+                with open(temp_doc, "rb") as f:
+                    bot.send_document(CHANNEL_ID, f, timeout=180)
+                bot.send_message(chat_id, "✅ DOC отправлен")
+                os.remove(temp_doc)
+            
+            ask_confirmation(chat_id, 11, "Отправка файлов завершена", total)
+            return
+        
+        # ШАГ 12: Завершение и очистка
+        elif current_step == 12:
+            info = confirm_step_data[chat_id].get("info", {})
+            bot.send_message(
+                chat_id,
+                f"✅ Книга '{info.get('title_ru', 'Без названия')}' опубликована в канале!"
+            )
+            
+            # Очистка
+            cleanup_user(chat_id)
+            confirm_step_data.pop(chat_id, None)
+            return
+        
+    except Exception as e:
+        bot.send_message(chat_id, f"❌ Ошибка на шаге {current_step}:\n{e}")
+        print(f"Ошибка на шаге {current_step}: {e}")
+
 
 def cleanup_user(chat_id):
     data = user_data.get(chat_id, {})
@@ -448,129 +684,6 @@ def cleanup_user(chat_id):
 
     user_data.pop(chat_id, None)
     user_choices.pop(chat_id, None)
-
-def publish_to_channel(chat_id):
-    try:
-        data = user_data.get(chat_id)
-        choices = user_choices.get(chat_id)
-
-        if not data or not choices:
-            bot.send_message(chat_id, "❌ Ошибка: данные не найдены")
-            return
-
-        epub_path = data.get("epub")
-        fb2_path = data.get("fb2")
-        doc_path = data.get("doc")
-        txt = data.get("txt", "")
-        cover = data.get("cover")
-
-        info = parse_info(txt, epub_path)
-        chapters = count_chapters(epub_path) if epub_path else "?"
-        annotation = extract_annotation(epub_path) if epub_path else "Описание отсутствует"
-
-        glossary = choices.get("glossary", "?")
-        translation = choices.get("translation", "?")
-        filter_choice = choices.get("filter", "none")
-        status = choices.get("status", "?")
-
-        post2 = format_text(info, chapters, status, annotation)
-        post3 = format_files(glossary, translation, filter_choice)
-
-        if cover:
-            with open(cover, "rb") as img:
-                bot.send_photo(CHANNEL_ID, img, timeout=60)
-
-        bot.send_message(
-            CHANNEL_ID,
-            post2,
-            parse_mode="HTML",
-            disable_web_page_preview=True
-        )
-
-        if epub_path:
-            clean_name = f"{info.get('title_ru', 'book')}.epub"
-            temp_epub = f"/tmp/{clean_name}"
-
-            shutil.copy2(epub_path, temp_epub)
-
-            with open(temp_epub, "rb") as f:
-                bot.send_document(
-                    CHANNEL_ID,
-                    f,
-                    caption=post3,
-                    timeout=180
-                )
-
-            if os.path.exists(temp_epub):
-                os.remove(temp_epub)
-
-        elif fb2_path:
-            clean_name = f"{info.get('title_ru', 'book')}.fb2"
-            temp_fb2 = f"/tmp/{clean_name}"
-
-            shutil.copy2(fb2_path, temp_fb2)
-
-            with open(temp_fb2, "rb") as f:
-                bot.send_document(
-                    CHANNEL_ID,
-                    f,
-                    caption=post3,
-                    timeout=180
-                )
-
-            if os.path.exists(temp_fb2):
-                os.remove(temp_fb2)
-
-        else:
-            bot.send_message(CHANNEL_ID, post3)
-
-        if fb2_path and epub_path:
-            clean_name = f"{info.get('title_ru', 'book')}.fb2"
-            temp_fb2 = f"/tmp/{clean_name}"
-
-            shutil.copy2(fb2_path, temp_fb2)
-
-            with open(temp_fb2, "rb") as f:
-                bot.send_document(
-                    CHANNEL_ID,
-                    f,
-                    timeout=180
-                )
-
-            if os.path.exists(temp_fb2):
-                os.remove(temp_fb2)
-
-        if doc_path:
-            clean_name = f"{info.get('title_ru', 'document')}.docx"
-            temp_doc = f"/tmp/{clean_name}"
-
-            shutil.copy2(doc_path, temp_doc)
-
-            with open(temp_doc, "rb") as f:
-                bot.send_document(
-                    CHANNEL_ID,
-                    f,
-                    timeout=180
-                )
-
-            if os.path.exists(temp_doc):
-                os.remove(temp_doc)
-
-        bot.send_message(
-            chat_id,
-            f"✅ Книга '{info.get('title_ru', 'Без названия')}' опубликована в канале!"
-        )
-
-    except Exception as e:
-        print(f"Ошибка публикации: {e}")
-
-        bot.send_message(
-            chat_id,
-            f"❌ Ошибка публикации:\n{e}"
-        )
-
-    finally:
-        cleanup_user(chat_id)
 
 
 # ================= START =================
