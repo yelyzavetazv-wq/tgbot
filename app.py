@@ -116,20 +116,26 @@ def count_chapters(epub_path):
                         
                         # Находим все navPoint
                         nav_points = soup.find_all('navPoint')
-                        if nav_points:
-                            # Берём последний navPoint
-                            last_nav = nav_points[-1]
-                            # Ищем текст внутри navLabel
-                            nav_label = last_nav.find('navLabel')
-                            if nav_label:
-                                text_tag = nav_label.find('text')
-                                if text_tag and text_tag.text:
-                                    text = text_tag.text
-                                    # Ищем число в тексте (например "Глава 376")
-                                    match = re.search(r'(\d+)', text)
-                                    if match:
-                                        return int(match.group(1))
-                    break
+                        if not nav_points or len(nav_points) == 0:
+                            return "?"
+                        
+                        # Берём последний navPoint
+                        last_nav = nav_points[-1]
+                        # Ищем текст внутри navLabel
+                        nav_label = last_nav.find('navLabel')
+                        if not nav_label:
+                            return "?"
+                        
+                        text_tag = nav_label.find('text')
+                        if not text_tag or not text_tag.text:
+                            return "?"
+                        
+                        text = text_tag.text
+                        # Ищем число в тексте (например "Глава 376")
+                        match = re.search(r'(\d+)', text)
+                        if match:
+                            return int(match.group(1))
+                    return "?"
         return "?"
     except Exception as e:
         print(f"Ошибка подсчёта глав: {e}")
