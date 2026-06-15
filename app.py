@@ -150,3 +150,5 @@ def publish_to_channel(chat_id):
 
     finally:
         cleanup_user(chat_id)
+# В самом конце файла
+application = app
