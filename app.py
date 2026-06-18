@@ -1,132 +1,137 @@
-from flask import Flask, request
-import telebot
-from telebot.types import InlineKeyboardMarkup, InlineKeyboardButton
 import os
 import uuid
 import zipfile
 import re
-import xml.etree.ElementTree as ET
-import requests
-import shutil
-from werkzeug.utils import secure_filename
+import random
+import asyncio
+import tempfile
 from ebooklib import epub, ITEM_COVER, ITEM_IMAGE
 from bs4 import BeautifulSoup
 from html import escape
-from requests.adapters import HTTPAdapter
-from urllib3.util.retry import Retry
+from dotenv import load_dotenv
+from aiohttp import web, ClientTimeout
+from aiogram import Bot, Dispatcher, types, F
+from aiogram.client.default import DefaultBotProperties
+from aiogram.filters import Command
+from aiogram.fsm.storage.memory import MemoryStorage
+from aiogram.fsm.context import FSMContext
+from aiogram.fsm.state import State, StatesGroup
+from aiogram.types import InlineKeyboardMarkup, InlineKeyboardButton, FSInputFile, LinkPreviewOptions
+from aiogram.webhook.aiohttp_server import SimpleRequestHandler, setup_application
+from aiogram.client.session.aiohttp import AiohttpSession
+from aiogram.client.session.middlewares.base import BaseRequestMiddleware, NextRequestMiddlewareType
+from aiogram.methods import TelegramMethod
+from aiogram.methods.base import TelegramType
 
-# Настройка сессии с ретраями
-session = requests.Session()
-retries = Retry(total=3, backoff_factor=1)
-session.mount('https://', HTTPAdapter(max_retries=retries))
+load_dotenv()
 
 # ================= CONFIG =================
 
-TOKEN = os.getenv("TOKEN")
-CHANNEL_ID = "@my_ff_translate"
+TOKEN = os.getenv("BOT_TOKEN")
+GROUP_USERNAME = os.getenv("GROUP_USERNAME")
+WEBHOOK_URL = os.getenv("WEBHOOK_URL")  # Например: https://my-bot.onrender.com
+MAX_FILE_SIZE = 20 * 1024 * 1024
+TEMP_DIR = tempfile.gettempdir() # Кроссплатформенная временная папка
 
-if not TOKEN or ":" not in TOKEN:
-    raise Exception("TOKEN not set")
+if not TOKEN:
+    raise ValueError("ОШИБКА: BOT_TOKEN не найден в переменных окружения или файле .env")
 
-bot = telebot.TeleBot(TOKEN, threaded=False)
-app = Flask(__name__)
+# ================= MIDDLEWARES (RETRIES) =================
 
-user_data = {}
-user_choices = {}
+class RetryRequestMiddleware(BaseRequestMiddleware):
+    """Мидлварь для автоматического переподключения при сбоях сети (Пункт 3)"""
+    def __init__(self, retries: int = 3, backoff: float = 1.0):
+        self.retries = retries
+        self.backoff = backoff
 
-# ================= HEALTH =================
+    async def __call__(
+        self,
+        make_request: NextRequestMiddlewareType,
+        bot: "Bot",
+        method: TelegramMethod[TelegramType],
+    ):
+        for attempt in range(self.retries):
+            try:
+                return await make_request(bot, method)
+            except Exception as e:
+                if attempt == self.retries - 1:
+                    raise e
+                await asyncio.sleep(self.backoff * (attempt + 1))
 
-@app.route("/")
-def home():
-    return "OK"
+session = AiohttpSession(timeout=180.0) 
+session.middleware.register(RetryRequestMiddleware(retries=3, backoff=1.0)) # Подключаем ретраи
 
-@app.route("/webhook", methods=["POST"])
-def webhook():
-    try:
-        update = telebot.types.Update.de_json(
-            request.get_data().decode("utf-8")
-        )
-        bot.process_new_updates([update])
-    except Exception as e:
-        print("WEBHOOK ERROR:", e)
+bot = Bot(token=TOKEN, session=session, default=DefaultBotProperties(parse_mode="HTML"))
+storage = MemoryStorage()
+dp = Dispatcher(storage=storage)
 
-    return "OK", 200
+class BookForm(StatesGroup):
+    waiting_for_glossary = State()
+    waiting_for_translation = State()
+    waiting_for_filter = State()
 
-# ================= EPUB =================
+# ================= UTILS =================
+
+def secure_filename(filename: str) -> str:
+    """Безопасное имя файла. Сохраняет кириллицу."""
+    return re.sub(r'[^\w\-.]', '_', filename)
+
+def clean_hashtag(tag: str) -> str:
+    cleaned = re.sub(r'[^\w]+', '_', tag).strip('_')
+    return cleaned
+
+# ================= EPUB PARSERS (СИНХРОННЫЕ ФУНКЦИИ) =================
 
 def extract_cover(epub_path):
     try:
         book = epub.read_epub(epub_path)
-
         for item in book.get_items():
             if item.get_type() in (ITEM_COVER, ITEM_IMAGE):
-                path = f"/tmp/{uuid.uuid4().hex}.jpg"
+                path = os.path.join(TEMP_DIR, f"{uuid.uuid4().hex}.jpg")
                 with open(path, "wb") as f:
                     f.write(item.get_content())
                 return path
-    except:
+    except Exception:
         pass
     return None
 
-
 def extract_annotation(epub_path):
-    """Извлекает аннотацию из dc:description в OPF файле"""
     try:
-        import zipfile
-        from bs4 import BeautifulSoup
-        
         with zipfile.ZipFile(epub_path, 'r') as epub_zip:
             for name in epub_zip.namelist():
                 if name.endswith('.opf'):
                     with epub_zip.open(name) as f:
                         content = f.read().decode('utf-8', errors='ignore')
                         soup = BeautifulSoup(content, 'xml')
-                        
-                        # Ищем dc:description
                         description = soup.find('dc:description')
                         if description and description.text:
-                            # Парсим HTML внутри описания
                             inner_soup = BeautifulSoup(description.text, 'html.parser')
-                            # Берём текст из всех тегов p
                             paragraphs = inner_soup.find_all('p')
                             if paragraphs:
                                 texts = [p.get_text().strip() for p in paragraphs if p.get_text().strip()]
                                 return '\n'.join(texts)[:2000]
-                            # Если нет p, берём весь текст
                             return description.text.strip()[:2000]
         return "Описание отсутствует"
     except Exception as e:
         print(f"Ошибка парсинга аннотации: {e}")
         return "Описание отсутствует"
 
-
 def count_chapters(epub_path):
-    """Определяет количество глав по номеру в тексте последней главы из toc.ncx"""
     try:
-        import zipfile
-        import re
-        from bs4 import BeautifulSoup
-        
         with zipfile.ZipFile(epub_path, 'r') as z:
             for name in z.namelist():
-                if name.endswith('.ncx'):
+                if name.endswith('.ncx') or name.endswith('nav.xhtml') or name.endswith('toc.xhtml'):
                     with z.open(name) as f:
                         content = f.read().decode('utf-8', errors='ignore')
                         soup = BeautifulSoup(content, 'xml')
-                        
-                        # Находим все navPoint
                         nav_points = soup.find_all('navPoint')
                         if nav_points:
-                            # Берём последний navPoint
                             last_nav = nav_points[-1]
-                            # Ищем текст внутри navLabel
                             nav_label = last_nav.find('navLabel')
                             if nav_label:
                                 text_tag = nav_label.find('text')
                                 if text_tag and text_tag.text:
-                                    text = text_tag.text
-                                    # Ищем число в тексте (например "Глава 376")
-                                    match = re.search(r'(\d+)', text)
+                                    match = re.search(r'(\d+)', text_tag.text)
                                     if match:
                                         return int(match.group(1))
                     break
@@ -135,42 +140,25 @@ def count_chapters(epub_path):
         print(f"Ошибка подсчёта глав: {e}")
         return "?"
 
-
 def extract_tags_from_opf(epub_path):
-    """Извлекает теги из dc:subject в OPF файле"""
     tags = []
     try:
-        import zipfile
-        from bs4 import BeautifulSoup
-        
         with zipfile.ZipFile(epub_path, 'r') as z:
             for name in z.namelist():
                 if name.endswith('.opf'):
                     with z.open(name) as f:
                         content = f.read().decode('utf-8', errors='ignore')
                         soup = BeautifulSoup(content, 'xml')
-                        
                         for subject in soup.find_all('dc:subject'):
                             if subject.text:
                                 tags.append(subject.text.strip())
                     break
-    except:
+    except Exception:
         pass
     return tags
 
-
-# ================= TXT PARSER =================
-
 def parse_info(text, epub_path=None):
-    info = {
-        "title_ru": "",
-        "title_en": "",
-        "title_original": "",
-        "author": "",
-        "links": [],
-        "tags": []
-    }
-
+    info = {"title_ru": "", "title_en": "", "title_original": "", "author": "", "links": [], "tags": []}
     for line in text.split("\n"):
         line = line.strip()
         if line.startswith("http"):
@@ -186,244 +174,249 @@ def parse_info(text, epub_path=None):
 
     if epub_path:
         info["tags"] = extract_tags_from_opf(epub_path)
-
     return info
-
 
 # ================= KEYBOARDS =================
 
 def glossary_keyboard():
-    kb = InlineKeyboardMarkup()
-    kb.add(
-        InlineKeyboardButton("Gemini 3.5 Flash", callback_data="glossary:Gemini 3.5 Flash"),
-        InlineKeyboardButton("Gemini 3.1 Flash Lite", callback_data="glossary:Gemini 3.1 Flash Lite"),
-        InlineKeyboardButton("Gemini 3 Flash", callback_data="glossary:Gemini 3 Flash"),
-        InlineKeyboardButton("Gemini 2.5 Flash", callback_data="glossary:Gemini 2.5 Flash"),
-        InlineKeyboardButton("✏️ Другое", callback_data="glossary:other"),
-        row_width=1
-    )
-    return kb
-
+    return InlineKeyboardMarkup(inline_keyboard=[
+        [InlineKeyboardButton(text="Gemini 3.5 Flash", callback_data="glossary:Gemini 3.5 Flash")],
+        [InlineKeyboardButton(text="Gemini 3.1 Flash Lite", callback_data="glossary:Gemini 3.1 Flash Lite")],
+        [InlineKeyboardButton(text="Gemini 3 Flash", callback_data="glossary:Gemini 3 Flash")],
+        [InlineKeyboardButton(text="Gemini 2.5 Flash", callback_data="glossary:Gemini 2.5 Flash")],
+        [InlineKeyboardButton(text="✏️ Другое", callback_data="glossary:other")]
+    ])
 
 def translation_keyboard():
-    kb = InlineKeyboardMarkup()
-    kb.add(
-        InlineKeyboardButton("Gemini 3.5 Flash", callback_data="translation:Gemini 3.5 Flash"),
-        InlineKeyboardButton("Gemini 3.1 Flash Lite", callback_data="translation:Gemini 3.1 Flash Lite"),
-        InlineKeyboardButton("Gemini 3 Flash", callback_data="translation:Gemini 3 Flash"),
-        InlineKeyboardButton("Gemini 2.5 Flash", callback_data="translation:Gemini 2.5 Flash"),
-        InlineKeyboardButton("✏️ Другое", callback_data="translation:other"),
-        row_width=1
-    )
-    return kb
-
+    return InlineKeyboardMarkup(inline_keyboard=[
+        [InlineKeyboardButton(text="Gemini 3.5 Flash", callback_data="translation:Gemini 3.5 Flash")],
+        [InlineKeyboardButton(text="Gemini 3.1 Flash Lite", callback_data="translation:Gemini 3.1 Flash Lite")],
+        [InlineKeyboardButton(text="Gemini 3 Flash", callback_data="translation:Gemini 3 Flash")],
+        [InlineKeyboardButton(text="Gemini 2.5 Flash", callback_data="translation:Gemini 2.5 Flash")],
+        [InlineKeyboardButton(text="✏️ Другое", callback_data="translation:other")]
+    ])
 
 def filter_keyboard():
-    kb = InlineKeyboardMarkup()
-    kb.add(
-        InlineKeyboardButton("ChatGPT Web", callback_data="filter:ChatGPT Web"),
-        InlineKeyboardButton("DeepSeekWeb", callback_data="filter:DeepSeekWeb"),
-        InlineKeyboardButton("❌ Нет (не показывать)", callback_data="filter:none"),
-        InlineKeyboardButton("✏️ Другое", callback_data="filter:other"),
-        row_width=1
-    )
-    return kb
-
+    return InlineKeyboardMarkup(inline_keyboard=[
+        [InlineKeyboardButton(text="ChatGPT Web", callback_data="filter:ChatGPT Web")],
+        [InlineKeyboardButton(text="DeepSeekWeb", callback_data="filter:DeepSeekWeb")],
+        [InlineKeyboardButton(text="❌ Нет (не показывать)", callback_data="filter:none")],
+        [InlineKeyboardButton(text="✏️ Другое", callback_data="filter:other")]
+    ])
 
 def status_keyboard():
-    kb = InlineKeyboardMarkup()
-    kb.add(
-        InlineKeyboardButton("в процессе", callback_data="status:в процессе"),
-        InlineKeyboardButton("завершен", callback_data="status:завершен"),
-        InlineKeyboardButton("брошен", callback_data="status:брошен"),
-        row_width=1
-    )
-    return kb
-
+    return InlineKeyboardMarkup(inline_keyboard=[
+        [InlineKeyboardButton(text="в процессе", callback_data="status:в процессе")],
+        [InlineKeyboardButton(text="завершен", callback_data="status:завершен")],
+        [InlineKeyboardButton(text="брошен", callback_data="status:брошен")]
+    ])
 
 # ================= FORMAT =================
 
 def format_text(info, chapters, status, annotation):
-    text = f"""
-🏴‍☠️ {info.get('title_ru', 'Без названия')}
-🇬🇧 {info.get('title_en', '')}
-🌐 {info.get('title_original', '')}
 
-✍️ Автор: {info.get('author', '')}
+    title_ru = escape(info.get('title_ru') or info.get('title_en') or info.get('title_original') or 'Без названия')
+    title_en = escape(info.get('title_en', ''))
+    title_original = escape(info.get('title_original', ''))
+    author = escape(info.get('author', ''))
+    safe_status = escape(status)
+    safe_chapters = escape(str(chapters))
 
-📊 Глав: {chapters}
+    # Заголовки
+    text = f"🏴‍☠ {title_ru}\n"
+    if title_en:
+        text += f"🇬🇧 {title_en}\n"
+    if title_original:
+        text += f"🌐 {title_original}\n"
 
-📌 Статус: {status}
+    # Блок с автором, главами и статусом
+    text += "\n"
+    text += f"✍ Автор: {author}\n"
+    text += "\n"
+    text += f"📊 Глав: {safe_chapters}\n"
+    text += "\n"
+    text += f"📌 Статус: {safe_status}\n"
 
-"""
-    
+    # Теги (только если есть непустые)
     if info.get('tags'):
-        tags_with_hash = ", ".join([f"#{tag}" for tag in info['tags']])
-        text += f"🏷️ Теги: {tags_with_hash}\n"
-    
-    text += f"""
-    
-📖 Описание:
-<blockquote>{escape(annotation)}</blockquote>
-"""
-    for link in info.get('links', []):
-        text += f"\n🔗 {link}"
-    
-    return text
+        clean_tags = [
+            f"#{escape(clean_hashtag(tag))}"
+            for tag in info['tags']
+            if clean_hashtag(tag)
+        ]
+        if clean_tags:
+            text += f"🏷️ Теги: {', '.join(clean_tags)}\n"
 
+    # Описание
+    text += "\n"
+    text += "📖 Описание:\n"
+    text += f"<blockquote expandable>{escape(annotation)}</blockquote>\n"
+
+    # Ссылки
+    for link in info.get('links', []):
+        text += f"\n🔗 {escape(link)}"
+
+    return text
 
 def format_files(glossary, translation, filter_choice):
-    text = f"🤖 Глоссарий: {glossary}\n🤖 Перевод: {translation}"
+    text = f"🤖 Глоссарий: {escape(glossary)}\n🤖 Перевод: {escape(translation)}"
     if filter_choice and filter_choice != "none":
-        text += f"\n🧹 Фильтр: {filter_choice}"
+        text += f"\n🧹 Фильтр: {escape(filter_choice)}"
     return text
-
 
 # ================= HANDLERS =================
 
-@bot.message_handler(commands=["start"])
-def start(message):
-    bot.send_message(message.chat.id, "📚 Отправьте файлы книги: .epub (обязательно), .fb2, .doc, и файл описания .txt  ")
+@dp.message(Command("start"))
+async def start(message: types.Message, state: FSMContext):
+    await state.clear()
+    await message.answer("📚 Отправьте файлы книги: .epub, .fb2, .doc/.docx и файл описания .txt")
 
-    
-@bot.message_handler(content_types=["document"])
-def handle_docs(message):
-    MAX_FILE_SIZE = 100 * 1024 * 1024
-
+@dp.message(F.document)
+async def handle_docs(message: types.Message, state: FSMContext):
     if message.document.file_size > MAX_FILE_SIZE:
-        bot.send_message(
-            message.chat.id,
-            "❌ Файл слишком большой. Максимальный размер: 100 МБ."
-        )
+        await message.answer("❌ Файл слишком большой. Максимальный размер для скачивания ботом: 20 МБ.")
         return
-    file_info = bot.get_file(message.document.file_id)
-    file = bot.download_file(file_info.file_path)
 
+    file_info = await bot.get_file(message.document.file_id)
     name = secure_filename(message.document.file_name)
-    path = f"/tmp/{uuid.uuid4().hex}_{name}"
+    path = os.path.join(TEMP_DIR, f"{uuid.uuid4().hex}_{name}")
 
-    with open(path, "wb") as f:
-        f.write(file)
+    await bot.download(file_info, destination=path)
 
-    data = user_data.setdefault(message.chat.id, {
-        "epub": None,
-        "cover": None,
-        "fb2": None,
-        "doc": None,
-        "txt": ""
-    })
+    current_data = await state.get_data()
+    epub_path = current_data.get("epub")
+    cover_path = current_data.get("cover")
+    fb2_path = current_data.get("fb2")
+    doc_path = current_data.get("doc")
+    txt_content = current_data.get("txt", "")
+    keyboard_sent = current_data.get("keyboard_sent", False)
 
-    if name.endswith(".epub"):
-        data["epub"] = path
-        data["cover"] = extract_cover(path)
-        bot.send_message(message.chat.id, f"✅ Получен EPUB: {name}")
+    if name.lower().endswith(".epub"):
+
+        if epub_path and os.path.exists(epub_path):
+            try: os.remove(epub_path)
+            except Exception: pass
+        if cover_path and os.path.exists(cover_path):
+            try: os.remove(cover_path)
+            except Exception: pass
+
+        epub_path = path
+        cover_path = await asyncio.to_thread(extract_cover, path)
+        await message.answer(f"✅ Получен EPUB: {name}")
+
+    elif name.lower().endswith(".fb2"):
+
+        if fb2_path and os.path.exists(fb2_path):
+            try: os.remove(fb2_path)
+            except Exception: pass
+
+        fb2_path = path
+        await message.answer(f"✅ Получен FB2: {name}")
+
+    elif name.lower().endswith(".doc") or name.lower().endswith(".docx"):
         
-        # Проверяем: нужен только EPUB + TXT
-        if data.get("epub") and data.get("txt"):
-            bot.send_message(message.chat.id, "📚 Все файлы получены! Выберите Глоссарий:", reply_markup=glossary_keyboard())
-        elif data.get("epub") and not data.get("txt"):
-            # Молчим, ждём TXT
-            pass
+        if doc_path and os.path.exists(doc_path):
+            try: os.remove(doc_path)
+            except Exception: pass
 
-    elif name.endswith(".fb2"):
-        data["fb2"] = path
-        bot.send_message(message.chat.id, f"✅ Получен FB2: {name}")
-        
-        # FB2 не обязателен, но если уже есть EPUB и TXT — можно начинать
-        if data.get("epub") and data.get("txt"):
-            bot.send_message(message.chat.id, "📚 Все необходимые файлы получены! Выберите Глоссарий:", reply_markup=glossary_keyboard())
+        doc_path = path
+        await message.answer(f"✅ Получен DOC/DOCX: {name}")
 
-    elif name.endswith(".doc") or name.endswith(".docx"):
-        data["doc"] = path
-        bot.send_message(message.chat.id, f"✅ Получен DOC: {name}")
-        
-        if data.get("epub") and data.get("txt"):
-            bot.send_message(message.chat.id, "📚 Все необходимые файлы получены! Выберите Глоссарий:", reply_markup=glossary_keyboard())
-
-    elif name.endswith(".txt"):
+    elif name.lower().endswith(".txt"):
         try:
             with open(path, "r", encoding="utf-8") as f:
-                data["txt"] = f.read()
+                txt_content = f.read()
         except UnicodeDecodeError:
             try:
                 with open(path, "r", encoding="cp1251") as f:
-                    data["txt"] = f.read()
+                    txt_content = f.read()
             except Exception:
                 with open(path, "r", encoding="utf-8", errors="ignore") as f:
-                    data["txt"] = f.read()
+                    txt_content = f.read()
         
-        bot.send_message(message.chat.id, f"✅ Получен description.txt: {name}")
-        
-        if data.get("epub"):
-            bot.send_message(message.chat.id, "📚 Все файлы получены! Выберите Глоссарий:", reply_markup=glossary_keyboard())
-        else:
-            bot.send_message(message.chat.id, "❌ Нет EPUB файла! Пожалуйста, отправьте EPUB файл.")
+        await message.answer(f"✅ Получен description.txt: {name}")
+        if os.path.exists(path):
+            os.remove(path)
 
-# ================= CALLBACK =================
+    await state.update_data(
+        epub=epub_path,
+        cover=cover_path,
+        fb2=fb2_path,
+        doc=doc_path,
+        txt=txt_content
+    )
 
-@bot.callback_query_handler(func=lambda call: True)
-def callbacks(call):
-    chat_id = call.message.chat.id
-    user_choices.setdefault(chat_id, {})
+    # Пункт 4: Кнопки появляются, если есть ХОТЯ БЫ один файл книги + TXT файл
+    if (epub_path or fb2_path or doc_path) and txt_content and not keyboard_sent:
+        await state.update_data(keyboard_sent=True)
+        await message.answer("📚 Все необходимые файлы получены! Выберите Глоссарий:", reply_markup=glossary_keyboard())
+    elif txt_content and not (epub_path or fb2_path or doc_path):
+        await message.answer("💡 Файл описания принят. Теперь отправьте файл книги (.epub, .fb2, .doc, .docx)")
 
+# ================= CALLBACKS & FSM =================
+
+@dp.callback_query()
+async def callbacks(call: types.CallbackQuery, state: FSMContext):
     data_parts = call.data.split(":", 1)
     cat = data_parts[0]
     val = data_parts[1] if len(data_parts) > 1 else ""
 
-    bot.answer_callback_query(call.id)
+    await call.answer()
 
     try:
-        bot.delete_message(chat_id, call.message.message_id)
-    except:
-        pass
+        await call.message.delete()
+    except Exception as e:
+        print(f"Ошибка удаления сообщения: {e}")
 
     if cat == "glossary":
         if val == "other":
-            msg = bot.send_message(chat_id, "✏️ Введите название модели для Глоссария:")
-            bot.register_next_step_handler(msg, set_glossary, chat_id)
+            await call.message.answer("✏️ Введите название модели для Глоссария:")
+            await state.set_state(BookForm.waiting_for_glossary)
         else:
-            user_choices[chat_id]["glossary"] = val
-            bot.send_message(chat_id, "🤖 Выберите модель для Перевода:", reply_markup=translation_keyboard())
+            await state.update_data(glossary=val)
+            await call.message.answer("🤖 Выберите модель для Перевода:", reply_markup=translation_keyboard())
 
     elif cat == "translation":
         if val == "other":
-            msg = bot.send_message(chat_id, "✏️ Введите название модели для Перевода:")
-            bot.register_next_step_handler(msg, set_translation, chat_id)
+            await call.message.answer("✏️ Введите название модели для Перевода:")
+            await state.set_state(BookForm.waiting_for_translation)
         else:
-            user_choices[chat_id]["translation"] = val
-            bot.send_message(chat_id, "🧹 Выберите Фильтр:", reply_markup=filter_keyboard())
+            await state.update_data(translation=val)
+            await call.message.answer("🧹 Выберите Фильтр:", reply_markup=filter_keyboard())
 
     elif cat == "filter":
         if val == "other":
-            msg = bot.send_message(chat_id, "✏️ Введите название Фильтра:")
-            bot.register_next_step_handler(msg, set_filter, chat_id)
+            await call.message.answer("✏️ Введите название Фильтра:")
+            await state.set_state(BookForm.waiting_for_filter)
         else:
-            user_choices[chat_id]["filter"] = val
-            bot.send_message(chat_id, "📌 Выберите Статус:", reply_markup=status_keyboard())
+            await state.update_data(filter=val)
+            await call.message.answer("📌 Выберите Статус:", reply_markup=status_keyboard())
 
     elif cat == "status":
-        user_choices[chat_id]["status"] = val
-        publish_to_channel(chat_id)
+        await state.update_data(status=val)
+        await publish_to_forum(call.message.chat.id, state)
 
+@dp.message(BookForm.waiting_for_glossary)
+async def set_glossary(message: types.Message, state: FSMContext):
+    await state.update_data(glossary=message.text)
+    await state.set_state(None) 
+    await message.answer("🤖 Выберите модель для Перевода:", reply_markup=translation_keyboard())
 
-def set_glossary(message, chat_id):
-    user_choices[chat_id]["glossary"] = message.text
-    bot.send_message(chat_id, "🤖 Выберите модель для Перевода:", reply_markup=translation_keyboard())
+@dp.message(BookForm.waiting_for_translation)
+async def set_translation(message: types.Message, state: FSMContext):
+    await state.update_data(translation=message.text)
+    await state.set_state(None)
+    await message.answer("🧹 Выберите Фильтр:", reply_markup=filter_keyboard())
 
+@dp.message(BookForm.waiting_for_filter)
+async def set_filter(message: types.Message, state: FSMContext):
+    await state.update_data(filter=message.text)
+    await state.set_state(None)
+    await message.answer("📌 Выберите Статус:", reply_markup=status_keyboard())
 
-def set_translation(message, chat_id):
-    user_choices[chat_id]["translation"] = message.text
-    bot.send_message(chat_id, "🧹 Выберите Фильтр:", reply_markup=filter_keyboard())
+# ================= CLEANUP & PUBLISH =================
 
-
-def set_filter(message, chat_id):
-    user_choices[chat_id]["filter"] = message.text
-    bot.send_message(chat_id, "📌 Выберите Статус:", reply_markup=status_keyboard())
-
-def cleanup_user(chat_id):
-    data = user_data.get(chat_id, {})
-
-    # Удаляем файлы пользователя
+def cleanup_files(data: dict):
     for key in ["epub", "fb2", "doc", "cover"]:
         file_path = data.get(key)
         if file_path and os.path.exists(file_path):
@@ -432,143 +425,130 @@ def cleanup_user(chat_id):
             except Exception as e:
                 print(f"Ошибка удаления {file_path}: {e}")
 
-    # Удаляем временную папку
-    extract_path = data.get("extract_path")
-    if extract_path and os.path.exists(extract_path):
-        try:
-            shutil.rmtree(extract_path)
-        except Exception as e:
-            print(f"Ошибка удаления папки {extract_path}: {e}")
+async def publish_to_forum(chat_id: int, state: FSMContext):
+    data = await state.get_data()
 
-    user_data.pop(chat_id, None)
-    user_choices.pop(chat_id, None)
-
-def publish_to_channel(chat_id):
     try:
-        data = user_data.get(chat_id)
-        choices = user_choices.get(chat_id)
-
-        if not data or not choices:
-            bot.send_message(chat_id, "❌ Ошибка: данные не найдены")
-            return
-
         epub_path = data.get("epub")
         fb2_path = data.get("fb2")
         doc_path = data.get("doc")
         txt = data.get("txt", "")
         cover = data.get("cover")
 
-        info = parse_info(txt, epub_path)
-        chapters = count_chapters(epub_path) if epub_path else "?"
-        annotation = extract_annotation(epub_path) if epub_path else "Описание отсутствует"
+        # Пункт 4: Мягкая проверка — нужен хотя бы один формат книги и txt
+        if not (epub_path or fb2_path or doc_path) or not txt:
+            await bot.send_message(chat_id, "❌ Ошибка: Необходимые файлы (Книга/TXT) отсутствуют.")
+            return
 
-        glossary = choices.get("glossary", "?")
-        translation = choices.get("translation", "?")
-        filter_choice = choices.get("filter", "none")
-        status = choices.get("status", "?")
+        info = await asyncio.to_thread(parse_info, txt, epub_path)
+        chapters = await asyncio.to_thread(count_chapters, epub_path) if epub_path else "?"
+        annotation = await asyncio.to_thread(extract_annotation, epub_path) if epub_path else "Описание отсутствует"
+
+        glossary = data.get("glossary", "?")
+        translation = data.get("translation", "?")
+        filter_choice = data.get("filter", "none")
+        status = data.get("status", "?")
 
         post2 = format_text(info, chapters, status, annotation)
         post3 = format_files(glossary, translation, filter_choice)
 
-        if cover:
-            with open(cover, "rb") as img:
-                bot.send_photo(CHANNEL_ID, img, timeout=60)
+        title_topic = info.get('title_ru') or info.get('title_en') or info.get('title_original') or 'Без названия'
+        safe_title = re.sub(r'[\\/*?:"<>|]', "", title_topic).strip()
+        if not safe_title:
+            safe_title = "book"
 
-        bot.send_message(
-            CHANNEL_ID,
-            post2,
-            parse_mode="HTML",
-            disable_web_page_preview=True
+        # 1. Создаем тему
+        icon_color = random.choice([0x6FB9F0, 0xFFD67E, 0xCB86DB, 0x8EEE98, 0xFF93B2, 0xFB6F5F])
+        forum_topic = await bot.create_forum_topic(
+            chat_id=GROUP_USERNAME,
+            name=title_topic[:128], 
+            icon_color=icon_color
+        )
+        topic_id = forum_topic.message_thread_id
+
+        # 2. Отправляем обложку
+        if cover and os.path.exists(cover):
+            await bot.send_photo(
+                chat_id=GROUP_USERNAME,
+                photo=FSInputFile(cover),
+                message_thread_id=topic_id
+            )
+
+        # 3. Отправляем описание
+        await bot.send_message(
+            chat_id=GROUP_USERNAME,
+            text=post2,
+            link_preview_options=LinkPreviewOptions(is_disabled=True),
+            message_thread_id=topic_id
         )
 
-        if epub_path:
-            clean_name = f"{info.get('title_ru', 'book')}.epub"
-            temp_epub = f"/tmp/{clean_name}"
+        # 4. Отправляем документы
+        caption_sent = False
 
-            shutil.copy2(epub_path, temp_epub)
+        if epub_path and os.path.exists(epub_path):
+            await bot.send_document(
+                chat_id=GROUP_USERNAME,
+                document=FSInputFile(epub_path, filename=f"{safe_title}.epub"),
+                caption=post3,
+                message_thread_id=topic_id
+            )
+            caption_sent = True
 
-            with open(temp_epub, "rb") as f:
-                bot.send_document(
-                    CHANNEL_ID,
-                    f,
-                    caption=post3,
-                    timeout=180
-                )
+        if fb2_path and os.path.exists(fb2_path):
+            await bot.send_document(
+                chat_id=GROUP_USERNAME,
+                document=FSInputFile(fb2_path, filename=f"{safe_title}.fb2"),
+                caption=None if caption_sent else post3,
+                message_thread_id=topic_id
+            )
+            caption_sent = True
 
-            if os.path.exists(temp_epub):
-                os.remove(temp_epub)
+        if doc_path and os.path.exists(doc_path):
+            ext = "docx" if doc_path.lower().endswith("docx") else "doc"
+            await bot.send_document(
+                chat_id=GROUP_USERNAME,
+                document=FSInputFile(doc_path, filename=f"{safe_title}.{ext}"),
+                caption=None if caption_sent else post3,
+                message_thread_id=topic_id
+            )
 
-        elif fb2_path:
-            clean_name = f"{info.get('title_ru', 'book')}.fb2"
-            temp_fb2 = f"/tmp/{clean_name}"
-
-            shutil.copy2(fb2_path, temp_fb2)
-
-            with open(temp_fb2, "rb") as f:
-                bot.send_document(
-                    CHANNEL_ID,
-                    f,
-                    caption=post3,
-                    timeout=180
-                )
-
-            if os.path.exists(temp_fb2):
-                os.remove(temp_fb2)
-
-        else:
-            bot.send_message(CHANNEL_ID, post3)
-
-        if fb2_path and epub_path:
-            clean_name = f"{info.get('title_ru', 'book')}.fb2"
-            temp_fb2 = f"/tmp/{clean_name}"
-
-            shutil.copy2(fb2_path, temp_fb2)
-
-            with open(temp_fb2, "rb") as f:
-                bot.send_document(
-                    CHANNEL_ID,
-                    f,
-                    timeout=180
-                )
-
-            if os.path.exists(temp_fb2):
-                os.remove(temp_fb2)
-
-        if doc_path:
-            clean_name = f"{info.get('title_ru', 'document')}.docx"
-            temp_doc = f"/tmp/{clean_name}"
-
-            shutil.copy2(doc_path, temp_doc)
-
-            with open(temp_doc, "rb") as f:
-                bot.send_document(
-                    CHANNEL_ID,
-                    f,
-                    timeout=180
-                )
-
-            if os.path.exists(temp_doc):
-                os.remove(temp_doc)
-
-        bot.send_message(
-            chat_id,
-            f"✅ Книга '{info.get('title_ru', 'Без названия')}' опубликована в канале!"
-        )
+        await bot.send_message(chat_id=chat_id, text=f"✅ Тема '{escape(title_topic)}' успешно создана!")
+        
+        await state.clear() 
+        cleanup_files(data)
 
     except Exception as e:
         print(f"Ошибка публикации: {e}")
+        await bot.send_message(chat_id=chat_id, text=f"❌ Ошибка публикации:\n{escape(str(e))}")
 
-        bot.send_message(
-            chat_id,
-            f"❌ Ошибка публикации:\n{e}"
-        )
+# ================= СМАРТ-ЗАПУСК =================
 
-    finally:
-        cleanup_user(chat_id)
-
-
-# ================= START =================
+async def on_startup(bot: Bot):
+    if WEBHOOK_URL:
+        await bot.set_webhook(f"{WEBHOOK_URL}/webhook", drop_pending_updates=True)
+        print(f"Webhook установлен на {WEBHOOK_URL}/webhook")
 
 if __name__ == "__main__":
-    port = int(os.environ.get("PORT", 5000))
-    app.run(host="0.0.0.0", port=port)
+    PORT = os.environ.get("PORT")
+    if PORT:
+        # ---- РЕЖИМ СЕРВЕРА ----
+        port_num = int(PORT)
+        print(f"Запуск в режиме Webhook через aiohttp на порту {port_num}...")
+        
+        app = web.Application()
+        webhook_requests_handler = SimpleRequestHandler(dispatcher=dp, bot=bot)
+        webhook_requests_handler.register(app, path="/webhook")
+        
+        dp.startup.register(on_startup)
+        setup_application(app, dp, bot=bot)
+        
+        web.run_app(app, host="0.0.0.0", port=port_num)
+    else:
+        # ---- РЕЖИМ ЛОКАЛЬНОГО ПК (POLLING) ----
+        print("PORT не найден. Запуск в режиме Polling...")
+        async def main():
+            await bot.delete_webhook(drop_pending_updates=True)
+            print("Бот запущен!")
+            await dp.start_polling(bot)
+
+        asyncio.run(main())
