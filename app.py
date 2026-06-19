@@ -157,24 +157,82 @@ def extract_tags_from_opf(epub_path):
         pass
     return tags
 
-def parse_info(text, epub_path=None):
-    info = {"title_ru": "", "title_en": "", "title_original": "", "author": "", "links": [], "tags": []}
-    for line in text.split("\n"):
-        line = line.strip()
-        if line.startswith("http"):
-            info["links"].append(line)
-        elif "название_ru" in line.lower():
-            info["title_ru"] = line.split(":", 1)[1].strip()
-        elif "название_en" in line.lower():
-            info["title_en"] = line.split(":", 1)[1].strip()
-        elif "название_original" in line.lower():
-            info["title_original"] = line.split(":", 1)[1].strip()
-        elif "автор" in line.lower():
-            info["author"] = line.split(":", 1)[1].strip()
 
-    if epub_path:
-        info["tags"] = extract_tags_from_opf(epub_path)
-    return info
+def extract_metadata_from_epub(epub_path):
+    """Извлекает из EPUB: название, автора, описание, теги, ссылки издателя"""
+    result = {
+        "title_full": "",
+        "title_ru": "",
+        "title_en": "",
+        "title_original": "",
+        "author": "",
+        "annotation": "Описание отсутствует",
+        "tags": [],
+        "publisher_links": []
+    }
+    
+    try:
+        with zipfile.ZipFile(epub_path, 'r') as z:
+            for name in z.namelist():
+                if name.endswith('.opf'):
+                    with z.open(name) as f:
+                        content = f.read().decode('utf-8', errors='ignore')
+                        soup = BeautifulSoup(content, 'xml')
+                        
+                        # Название (dc:title) — разделяем по /
+                        title_tag = soup.find('dc:title')
+                        if title_tag and title_tag.text:
+                            title_full = title_tag.text.strip()
+                            result["title_full"] = title_full
+                            # Разбиваем по /
+                            parts = [p.strip() for p in title_full.split('/')]
+                            if len(parts) >= 1:
+                                result["title_ru"] = parts[0]
+                            if len(parts) >= 2:
+                                result["title_en"] = parts[1]
+                            if len(parts) >= 3:
+                                result["title_original"] = parts[2]
+                        
+                        # Автор
+                        creator = soup.find('dc:creator')
+                        if creator and creator.text:
+                            result["author"] = creator.text.strip()
+                        
+                        # Описание (аннотация)
+                        description = soup.find('dc:description')
+                        if description and description.text:
+                            # Убираем HTML-теги внутри
+                            inner_soup = BeautifulSoup(description.text, 'html.parser')
+                            paragraphs = inner_soup.find_all('p')
+                            if paragraphs:
+                                texts = [p.get_text().strip() for p in paragraphs if p.get_text().strip()]
+                                result["annotation"] = '\n'.join(texts)[:2000]
+                            else:
+                                result["annotation"] = description.text.strip()[:2000]
+                        
+                        # Теги (жанры)
+                        for subject in soup.find_all('dc:subject'):
+                            if subject.text:
+                                result["tags"].append(subject.text.strip())
+                        
+                        # Ссылки из dc:publisher
+                        publisher = soup.find('dc:publisher')
+                        if publisher and publisher.text:
+                            # Разбиваем по пробелам
+                            links = publisher.text.strip().split()
+                            for link in links:
+                                if link.startswith('http'):
+                                    result["publisher_links"].append(link)
+                        
+                    break
+    except Exception as e:
+        print(f"Ошибка парсинга метаданных EPUB: {e}")
+    
+    return result
+
+def parse_info_from_epub(epub_path):
+    """Парсит всю информацию из EPUB (без txt)"""
+    return extract_metadata_from_epub(epub_path)
 
 # ================= KEYBOARDS =================
 
@@ -213,12 +271,15 @@ def status_keyboard():
 
 # ================= FORMAT =================
 
-def format_text(info, chapters, status, annotation):
-
-    title_ru = escape(info.get('title_ru') or info.get('title_en') or info.get('title_original') or 'Без названия')
-    title_en = escape(info.get('title_en', ''))
-    title_original = escape(info.get('title_original', ''))
-    author = escape(info.get('author', ''))
+def format_text(metadata, chapters, status):
+    title_ru = escape(metadata.get('title_ru') or 'Без названия')
+    title_en = escape(metadata.get('title_en', ''))
+    title_original = escape(metadata.get('title_original', ''))
+    author = escape(metadata.get('author', ''))
+    annotation = escape(metadata.get('annotation', 'Описание отсутствует'))
+    tags = metadata.get('tags', [])
+    links = metadata.get('publisher_links', [])
+    
     safe_status = escape(status)
     safe_chapters = escape(str(chapters))
 
@@ -237,11 +298,11 @@ def format_text(info, chapters, status, annotation):
     text += "\n"
     text += f"📌 Статус: {safe_status}\n"
 
-    # Теги (только если есть непустые)
-    if info.get('tags'):
+    # Теги
+    if tags:
         clean_tags = [
             f"#{escape(clean_hashtag(tag))}"
-            for tag in info['tags']
+            for tag in tags
             if clean_hashtag(tag)
         ]
         if clean_tags:
@@ -250,10 +311,10 @@ def format_text(info, chapters, status, annotation):
     # Описание
     text += "\n"
     text += "📖 Описание:\n"
-    text += f"<blockquote expandable>{escape(annotation)}</blockquote>\n"
+    text += f"<blockquote expandable>{annotation}</blockquote>\n"
 
-    # Ссылки
-    for link in info.get('links', []):
+    # Ссылки (каждая с новой строки)
+    for link in links:
         text += f"\n🔗 {escape(link)}"
 
     return text
@@ -273,17 +334,17 @@ def format_files(glossary, translation, filter_choice):
 @dp.message(Command("start"))
 async def start(message: types.Message, state: FSMContext):
     await state.clear()
-    await message.answer("📚 Отправьте файлы книги: .epub, .fb2, .doc/.docx и файл описания .txt")
+    await message.answer("📚 Отправьте файл книги в формате .epub")
 
 # ЕДИНЫЙ ХЕНДЛЕР ДЛЯ ДОКУМЕНТОВ — ТОЛЬКО ЛИЧКА
 @dp.message(F.document)
 async def handle_docs(message: types.Message, state: FSMContext):
-    # Проверка: бот принимает файлы ТОЛЬКО из личных сообщений
+    # Проверка: только из лички
     if message.chat.type != "private":
         return
 
     if message.document.file_size > MAX_FILE_SIZE:
-        await message.answer("❌ Файл слишком большой. Максимальный размер для скачивания ботом: 20 МБ.")
+        await message.answer("❌ Файл слишком большой. Максимальный размер: 20 МБ.")
         return
 
     file_info = await bot.get_file(message.document.file_id)
@@ -292,75 +353,44 @@ async def handle_docs(message: types.Message, state: FSMContext):
 
     await bot.download(file_info, destination=path)
 
+    # Проверяем расширение
+    if not name.lower().endswith(".epub"):
+        await message.answer("❌ Бот принимает только файлы .epub")
+        if os.path.exists(path):
+            os.remove(path)
+        return
+
     current_data = await state.get_data()
     epub_path = current_data.get("epub")
     cover_path = current_data.get("cover")
-    fb2_path = current_data.get("fb2")
-    doc_path = current_data.get("doc")
-    txt_content = current_data.get("txt", "")
     keyboard_sent = current_data.get("keyboard_sent", False)
 
-    if name.lower().endswith(".epub"):
+    # Удаляем старый EPUB и обложку
+    if epub_path and os.path.exists(epub_path):
+        try: os.remove(epub_path)
+        except Exception: pass
+    if cover_path and os.path.exists(cover_path):
+        try: os.remove(cover_path)
+        except Exception: pass
 
-        if epub_path and os.path.exists(epub_path):
-            try: os.remove(epub_path)
-            except Exception: pass
-        if cover_path and os.path.exists(cover_path):
-            try: os.remove(cover_path)
-            except Exception: pass
-
-        epub_path = path
-        cover_path = await asyncio.to_thread(extract_cover, path)
-        await message.answer(f"✅ Получен EPUB: {name}")
-
-    elif name.lower().endswith(".fb2"):
-
-        if fb2_path and os.path.exists(fb2_path):
-            try: os.remove(fb2_path)
-            except Exception: pass
-
-        fb2_path = path
-        await message.answer(f"✅ Получен FB2: {name}")
-
-    elif name.lower().endswith(".doc") or name.lower().endswith(".docx"):
-        
-        if doc_path and os.path.exists(doc_path):
-            try: os.remove(doc_path)
-            except Exception: pass
-
-        doc_path = path
-        await message.answer(f"✅ Получен DOC/DOCX: {name}")
-
-    elif name.lower().endswith(".txt"):
-        try:
-            with open(path, "r", encoding="utf-8") as f:
-                txt_content = f.read()
-        except UnicodeDecodeError:
-            try:
-                with open(path, "r", encoding="cp1251") as f:
-                    txt_content = f.read()
-            except Exception:
-                with open(path, "r", encoding="utf-8", errors="ignore") as f:
-                    txt_content = f.read()
-        
-        await message.answer(f"✅ Получен description.txt: {name}")
-        if os.path.exists(path):
-            os.remove(path)
-
+    epub_path = path
+    cover_path = await asyncio.to_thread(extract_cover, path)
+    
+    # Сохраняем метаданные в состояние (чтобы потом не парсить заново)
+    metadata = await asyncio.to_thread(extract_metadata_from_epub, path)
+    
     await state.update_data(
         epub=epub_path,
         cover=cover_path,
-        fb2=fb2_path,
-        doc=doc_path,
-        txt=txt_content
+        metadata=metadata
     )
 
-    # Пункт 4: Кнопки появляются, если есть ХОТЯ БЫ один файл книги + TXT файл
-    if (epub_path or fb2_path or doc_path) and txt_content and not keyboard_sent:
+    await message.answer(f"✅ Получен EPUB: {name}")
+
+    # Кнопки появляются сразу после получения EPUB
+    if not keyboard_sent:
         await state.update_data(keyboard_sent=True)
-        await message.answer("📚 Все необходимые файлы получены! Выберите Глоссарий:", reply_markup=glossary_keyboard())
-    elif txt_content and not (epub_path or fb2_path or doc_path):
-        await message.answer("💡 Файл описания принят. Теперь отправьте файл книги (.epub, .fb2, .doc, .docx)")
+        await message.answer("📚 Книга загружена! Выберите Глоссарий:", reply_markup=glossary_keyboard())
 
 # ================= CALLBACKS & FSM =================
 
@@ -426,7 +456,7 @@ async def set_filter(message: types.Message, state: FSMContext):
 # ================= CLEANUP & PUBLISH =================
 
 def cleanup_files(data: dict):
-    for key in ["epub", "fb2", "doc", "cover"]:
+    for key in ["epub", "cover"]:
         file_path = data.get(key)
         if file_path and os.path.exists(file_path):
             try:
@@ -439,32 +469,37 @@ async def publish_to_forum(chat_id: int, state: FSMContext):
 
     try:
         epub_path = data.get("epub")
-        fb2_path = data.get("fb2")
-        doc_path = data.get("doc")
-        txt = data.get("txt", "")
         cover = data.get("cover")
-
-        # Пункт 4: Мягкая проверка — нужен хотя бы один формат книги и txt
-        if not (epub_path or fb2_path or doc_path) or not txt:
-            await bot.send_message(chat_id, "❌ Ошибка: Необходимые файлы (Книга/TXT) отсутствуют.")
+        metadata = data.get("metadata", {})
+        
+        # Проверка: нужен EPUB
+        if not epub_path:
+            await bot.send_message(chat_id, "❌ Ошибка: Файл EPUB отсутствует.")
             return
 
-        info = await asyncio.to_thread(parse_info, txt, epub_path)
-        chapters = await asyncio.to_thread(count_chapters, epub_path) if epub_path else "?"
-        annotation = await asyncio.to_thread(extract_annotation, epub_path) if epub_path else "Описание отсутствует"
+        # Если метаданные не сохранились — парсим заново
+        if not metadata:
+            metadata = await asyncio.to_thread(extract_metadata_from_epub, epub_path)
 
+        # Главы
+        chapters = await asyncio.to_thread(count_chapters, epub_path) if epub_path else "?"
+
+        # Остальное
         glossary = data.get("glossary", "?")
         translation = data.get("translation", "?")
         filter_choice = data.get("filter", "none")
         status = data.get("status", "?")
 
-        post2 = format_text(info, chapters, status, annotation)
-        post3 = format_files(glossary, translation, filter_choice)
+        post_text = format_text(metadata, chapters, status)
+        post_files = format_files(glossary, translation, filter_choice)
 
-        title_topic = info.get('title_ru') or info.get('title_en') or info.get('title_original') or 'Без названия'
+        # Название для темы
+        title_topic = metadata.get('title_ru') or metadata.get('title_en') or metadata.get('title_original') or 'Без названия'
         safe_title = re.sub(r'[\\/*?:"<>|]', "", title_topic).strip()
         if not safe_title:
             safe_title = "book"
+
+        # ... остальная часть функции без изменений (отправка обложки, описания, файлов)
 
         # Создаем тему (только для групп)
         # icon_color = random.choice([0x6FB9F0, 0xFFD67E, 0xCB86DB, 0x8EEE98, 0xFF93B2, 0xFB6F5F])
@@ -489,7 +524,7 @@ async def publish_to_forum(chat_id: int, state: FSMContext):
         # 3. Отправляем описание
         await bot.send_message(
             chat_id=GROUP_USERNAME,
-            text=post2,
+            text=post_text,
             link_preview_options=LinkPreviewOptions(is_disabled=True),
             # message_thread_id=topic_id
         )
@@ -501,28 +536,10 @@ async def publish_to_forum(chat_id: int, state: FSMContext):
             await bot.send_document(
                 chat_id=GROUP_USERNAME,
                 document=FSInputFile(epub_path, filename=f"{safe_title}.epub"),
-                caption=post3,
+                caption=post_files,
                 # message_thread_id=topic_id
             )
             caption_sent = True
-
-        if fb2_path and os.path.exists(fb2_path):
-            await bot.send_document(
-                chat_id=GROUP_USERNAME,
-                document=FSInputFile(fb2_path, filename=f"{safe_title}.fb2"),
-                caption=None if caption_sent else post3,
-                # message_thread_id=topic_id
-            )
-            caption_sent = True
-
-        if doc_path and os.path.exists(doc_path):
-            ext = "docx" if doc_path.lower().endswith("docx") else "doc"
-            await bot.send_document(
-                chat_id=GROUP_USERNAME,
-                document=FSInputFile(doc_path, filename=f"{safe_title}.{ext}"),
-                caption=None if caption_sent else post3,
-                # message_thread_id=topic_id
-            )
 
         await bot.send_message(chat_id=chat_id, text=f"✅ Тема '{escape(title_topic)}' успешно создана!")
         
