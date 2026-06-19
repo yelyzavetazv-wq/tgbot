@@ -467,21 +467,24 @@ async def publish_to_forum(chat_id: int, state: FSMContext):
         if not safe_title:
             safe_title = "book"
 
-        # 1. Создаем тему
-        icon_color = random.choice([0x6FB9F0, 0xFFD67E, 0xCB86DB, 0x8EEE98, 0xFF93B2, 0xFB6F5F])
-        forum_topic = await bot.create_forum_topic(
-            chat_id=GROUP_USERNAME,
-            name=title_topic[:128], 
-            icon_color=icon_color
-        )
-        topic_id = forum_topic.message_thread_id
+        # Создаем тему (только для групп)
+        # icon_color = random.choice([0x6FB9F0, 0xFFD67E, 0xCB86DB, 0x8EEE98, 0xFF93B2, 0xFB6F5F])
+        # forum_topic = await bot.create_forum_topic(
+        #     chat_id=GROUP_USERNAME,
+        #     name=title_topic[:128], 
+        #     icon_color=icon_color
+        # )
+        # topic_id = forum_topic.message_thread_id
+
+        # Для канала — темы не создаём
+        topic_id = None
 
         # 2. Отправляем обложку
         if cover and os.path.exists(cover):
             await bot.send_photo(
                 chat_id=GROUP_USERNAME,
                 photo=FSInputFile(cover),
-                message_thread_id=topic_id
+               # message_thread_id=topic_id
             )
 
         # 3. Отправляем описание
@@ -489,7 +492,7 @@ async def publish_to_forum(chat_id: int, state: FSMContext):
             chat_id=GROUP_USERNAME,
             text=post2,
             link_preview_options=LinkPreviewOptions(is_disabled=True),
-            message_thread_id=topic_id
+            # message_thread_id=topic_id
         )
 
         # 4. Отправляем документы
@@ -500,7 +503,7 @@ async def publish_to_forum(chat_id: int, state: FSMContext):
                 chat_id=GROUP_USERNAME,
                 document=FSInputFile(epub_path, filename=f"{safe_title}.epub"),
                 caption=post3,
-                message_thread_id=topic_id
+                # message_thread_id=topic_id
             )
             caption_sent = True
 
@@ -509,7 +512,7 @@ async def publish_to_forum(chat_id: int, state: FSMContext):
                 chat_id=GROUP_USERNAME,
                 document=FSInputFile(fb2_path, filename=f"{safe_title}.fb2"),
                 caption=None if caption_sent else post3,
-                message_thread_id=topic_id
+                # message_thread_id=topic_id
             )
             caption_sent = True
 
@@ -519,7 +522,7 @@ async def publish_to_forum(chat_id: int, state: FSMContext):
                 chat_id=GROUP_USERNAME,
                 document=FSInputFile(doc_path, filename=f"{safe_title}.{ext}"),
                 caption=None if caption_sent else post3,
-                message_thread_id=topic_id
+                # message_thread_id=topic_id
             )
 
         await bot.send_message(chat_id=chat_id, text=f"✅ Тема '{escape(title_topic)}' успешно создана!")
