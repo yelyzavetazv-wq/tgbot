@@ -264,12 +264,22 @@ def format_files(glossary, translation, filter_choice):
         text += f"\n🧹 Фильтр: {escape(filter_choice)}"
     return text
 
+# ============================================
+# ПРИЁМ ФАЙЛОВ (ТОЛЬКО ИЗ ЛИЧКИ)
+# ============================================
+
 # ================= HANDLERS =================
 
 @dp.message(Command("start"))
 async def start(message: types.Message, state: FSMContext):
     await state.clear()
     await message.answer("📚 Отправьте файлы книги: .epub, .fb2, .doc/.docx и файл описания .txt")
+
+@dp.message(F.document)
+async def handle_docs(message: types.Message, state: FSMContext):
+    if message.chat.type != "private":
+        # Если сообщение не из лички — просто игнорируем
+        return
 
 @dp.message(F.document)
 async def handle_docs(message: types.Message, state: FSMContext):
