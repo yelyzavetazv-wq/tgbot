@@ -548,6 +548,13 @@ if __name__ == "__main__":
         print(f"Запуск в режиме Webhook через aiohttp на порту {port_num}...")
         
         app = web.Application()
+        
+        # Добавляем корневой маршрут для проверки, что сервер жив
+        async def health_check(request):
+            return web.Response(text="Bot is running")
+        app.router.add_get("/", health_check)
+        
+        # Регистрируем вебхук
         webhook_requests_handler = SimpleRequestHandler(dispatcher=dp, bot=bot)
         webhook_requests_handler.register(app, path="/webhook")
         
