@@ -275,14 +275,13 @@ async def start(message: types.Message, state: FSMContext):
     await state.clear()
     await message.answer("📚 Отправьте файлы книги: .epub, .fb2, .doc/.docx и файл описания .txt")
 
+# ЕДИНЫЙ ХЕНДЛЕР ДЛЯ ДОКУМЕНТОВ — ТОЛЬКО ЛИЧКА
 @dp.message(F.document)
 async def handle_docs(message: types.Message, state: FSMContext):
+    # Проверка: бот принимает файлы ТОЛЬКО из личных сообщений
     if message.chat.type != "private":
-        # Если сообщение не из лички — просто игнорируем
         return
 
-@dp.message(F.document)
-async def handle_docs(message: types.Message, state: FSMContext):
     if message.document.file_size > MAX_FILE_SIZE:
         await message.answer("❌ Файл слишком большой. Максимальный размер для скачивания ботом: 20 МБ.")
         return
