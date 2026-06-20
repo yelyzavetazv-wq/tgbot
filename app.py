@@ -6,7 +6,7 @@ import tempfile
 import contextlib
 import re
 from html import escape
-from aiogram import Bot, Dispatcher, F
+from aiogram import Bot, Dispatcher, F, types  # ВОТ ЗДЕСЬ ОШИБКА БЫЛА - types должен быть
 from aiogram.filters import Command
 from aiogram.fsm.context import FSMContext
 from aiogram.fsm.state import State, StatesGroup
