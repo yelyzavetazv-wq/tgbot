@@ -28,6 +28,17 @@ dp = Dispatcher(storage=MemoryStorage())
 class BookForm(StatesGroup):
     choosing_tools = State()
 
+async def check_and_clear(message: types.Message, state: FSMContext):
+    await asyncio.sleep(30)
+    data = await state.get_data()
+    # Если за 30 сек так и не пришел EPUB (нет ключа 'path')
+    if not data.get('path'):
+        files_to_remove = [i['path'] for i in data.get('extras', [])]
+        for p in files_to_remove:
+            if p and os.path.exists(p): os.remove(p)
+        await state.clear()
+        await message.answer("❌ Время вышло, EPUB не получен. Все файлы удалены.")
+
 # --- ИНСТРУМЕНТЫ И КНОПКИ ---
 def get_tools_kb(gl, tr, fl):
     return InlineKeyboardMarkup(inline_keyboard=[
@@ -106,25 +117,30 @@ async def start(message: types.Message):
 async def handle_docs(message: types.Message, state: FSMContext):
     if message.chat.type != "private": return
     
-    # --- ДОБАВЛЯЕМ ПРОВЕРКУ РАЗМЕРА ---
-    MAX_SIZE = 20 * 1024 * 1024  # 20 MB
-    if message.document.file_size > MAX_SIZE:
-        return await message.answer("❌ Файл слишком большой! Максимальный размер — 20 МБ.")
-    # -----------------------------------
-    
-    if os.path.splitext(message.document.file_name or "")[1].lower() not in ALLOWED_EXTENSIONS:
-        return await message.answer("❌ Только .epub")
-    
-    # ... остальной код (скачивание и далее) ...
-    
-    path = os.path.join(TEMP_DIR, f"{uuid.uuid4()}.epub")
+    if message.document.file_size > 20 * 1024 * 1024:
+        return await message.answer("❌ Файл больше 20 МБ.")
+
+    ext = os.path.splitext(message.document.file_name or "")[1].lower()
+    if ext not in ALLOWED_EXTENSIONS:
+        return await message.answer("❌ Формат не поддерживается.")
+
+    path = os.path.join(TEMP_DIR, f"{uuid.uuid4()}{ext}")
     await bot.download(message.document, destination=path)
-    meta = await asyncio.to_thread(extract_metadata, path)
-    cover = await asyncio.to_thread(extract_cover, path)
     
-    await state.update_data(path=path, name=message.document.file_name, meta=meta, cover=cover, gl="Gemini 3", tr="Gemini 3.5", fl="Нет")
-    await message.answer(f"✅ {message.document.file_name}\nНастрой инструменты:", reply_markup=get_tools_kb("Gemini 3", "Gemini 3.5", "Нет"))
-    await state.set_state(BookForm.choosing_tools)
+    data = await state.get_data()
+    extras = data.get('extras', [])
+    
+    if ext == '.epub' and 'path' not in data:
+        meta = await asyncio.to_thread(extract_metadata, path)
+        cover = await asyncio.to_thread(extract_cover, path)
+        await state.update_data(path=path, name=message.document.file_name, meta=meta, cover=cover, extras=extras)
+        await state.set_state(BookForm.choosing_tools)
+        await message.answer("✅ EPUB принят. Жду 30 сек для доп. файлов...", reply_markup=get_tools_kb(GL_OPTIONS[0], TR_OPTIONS[0], FL_OPTIONS[0]))
+        asyncio.create_task(check_and_clear(message, state))
+    else:
+        extras.append({"path": path, "name": message.document.file_name})
+        await state.update_data(extras=extras)
+        await message.answer(f"📎 {message.document.file_name} в очереди.")
 
 @dp.callback_query(BookForm.choosing_tools)
 async def callbacks(call: types.CallbackQuery, state: FSMContext):
@@ -164,6 +180,9 @@ async def callbacks(call: types.CallbackQuery, state: FSMContext):
             
             cap = f"🤖 Глоссарий: {escape(data['gl'])}\n🤖 Перевод: {escape(data['tr'])}\n🧹 Фильтр: {escape(data['fl'])}"
             await bot.send_document(GROUP_USERNAME, document=FSInputFile(data['path'], filename=data['name']), caption=cap)
+            # Отправка доп. файлов из очереди
+            for item in data.get('extras', []):
+                await bot.send_document(GROUP_USERNAME, document=FSInputFile(item['path'], filename=item['name']))
             
             await call.message.edit_text("✅ Опубликовано!")
             return # Выход, так как файлы удаляются в finally
@@ -173,7 +192,9 @@ async def callbacks(call: types.CallbackQuery, state: FSMContext):
             await call.answer("❌ Ошибка публикации", show_alert=True)
             return
         finally:
-            for p in [data.get('path'), data.get('cover')]:
+            # Собираем путь к основному файлу, обложке и ВСЕМ доп. файлам
+            all_files = [data.get('path'), data.get('cover')] + [i['path'] for i in data.get('extras', [])]
+            for p in all_files:
                 if p and os.path.exists(p): os.remove(p)
             await state.clear()
             return
