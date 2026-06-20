@@ -16,8 +16,11 @@ logging.basicConfig(level=logging.INFO)
 
 TOKEN = os.getenv("BOT_TOKEN")
 GROUP_USERNAME = os.getenv("GROUP_USERNAME")
-ALLOWED_EXTENSIONS = {'.epub'}
+ALLOWED_EXTENSIONS = {'.epub', '.pdf', '.txt', '.docx', '.doc', '.fb2', '.mobi'}
 TEMP_DIR = tempfile.gettempdir()
+GL_OPTIONS = ["Gemini 3.0", "Gemini 3.1", "Gemini 3.5"]
+TR_OPTIONS = ["Gemini 3.0", "Gemini 3.1", "Gemini 3.5"]
+FL_OPTIONS = ["ChatGpt", "DeepSeek", "Нет"]
 
 bot = Bot(token=TOKEN, default=DefaultBotProperties(parse_mode="HTML"))
 dp = Dispatcher(storage=MemoryStorage())
@@ -102,8 +105,17 @@ async def start(message: types.Message):
 @dp.message(F.document)
 async def handle_docs(message: types.Message, state: FSMContext):
     if message.chat.type != "private": return
+    
+    # --- ДОБАВЛЯЕМ ПРОВЕРКУ РАЗМЕРА ---
+    MAX_SIZE = 20 * 1024 * 1024  # 20 MB
+    if message.document.file_size > MAX_SIZE:
+        return await message.answer("❌ Файл слишком большой! Максимальный размер — 20 МБ.")
+    # -----------------------------------
+    
     if os.path.splitext(message.document.file_name or "")[1].lower() not in ALLOWED_EXTENSIONS:
         return await message.answer("❌ Только .epub")
+    
+    # ... остальной код (скачивание и далее) ...
     
     path = os.path.join(TEMP_DIR, f"{uuid.uuid4()}.epub")
     await bot.download(message.document, destination=path)
@@ -117,40 +129,59 @@ async def handle_docs(message: types.Message, state: FSMContext):
 @dp.callback_query(BookForm.choosing_tools)
 async def callbacks(call: types.CallbackQuery, state: FSMContext):
     data = await state.get_data()
-    if call.data == "change_gl": data['gl'] = "GPT-4o" if data['gl'] == "Gemini 3" else "Gemini 3"
-    elif call.data == "change_tr": data['tr'] = "DeepL" if data['tr'] == "Gemini 3.5" else "Gemini 3.5"
-    elif call.data == "change_fl": data['fl'] = "DeepSeek" if data['fl'] == "Нет" else "Нет"
+    
+    def get_next(current, options):
+        # Если текущего нет в списке (например, при первом запуске), берем 0
+        if current not in options: return options[0]
+        return options[(options.index(current) + 1) % len(options)]
+
+    if call.data == "change_gl": 
+        data['gl'] = get_next(data['gl'], GL_OPTIONS)
+    elif call.data == "change_tr": 
+        data['tr'] = get_next(data['tr'], TR_OPTIONS)
+    elif call.data == "change_fl": 
+        data['fl'] = get_next(data['fl'], FL_OPTIONS)
+    
     elif call.data == "pub_done":
-        meta = data['meta']
-        # 1. Текст описания
-        icons = ["🏴‍☠️", "🇬🇧", "🌐"]
-        post_text = ""
-        for i, title in enumerate(meta.get('titles', [])):
-            icon = icons[i] if i < len(icons) else "🔹"
-            post_text += f"{icon} <b>{escape(title)}</b>\n"
-        chapters = await asyncio.to_thread(count_chapters, data['path'])
-        post_text += f"\n✍️ Автор: {escape(meta.get('author', '?'))}\n📊 Глав: {escape(str(chapters))}"
-        if meta.get('tags'): post_text += f"\n\n🏷 {' '.join(meta['tags'])}"
-        post_text += f"\n\n📖 <b>Описание:</b>\n<blockquote expandable>{escape(meta.get('desc', 'Описание отсутствует'))}</blockquote>"
-        if meta.get('links'): post_text += f"\n\n🔗 {escape(meta['links'][0])}"
+        try:
+            meta = data['meta']
+            icons = ["🏴‍☠️", "🇬🇧", "🌐"]
+            post_text = ""
+            for i, title in enumerate(meta.get('titles', [])):
+                icon = icons[i] if i < len(icons) else "🔹"
+                post_text += f"{icon} <b>{escape(title)}</b>\n"
+            
+            chapters = await asyncio.to_thread(count_chapters, data['path'])
+            post_text += f"\n✍️ Автор: {escape(meta.get('author', '?'))}\n📊 Глав: {escape(str(chapters))}"
+            if meta.get('tags'): post_text += f"\n\n🏷 {' '.join(meta['tags'])}"
+            post_text += f"\n\n📖 <b>Описание:</b>\n<blockquote expandable>{escape(meta.get('desc', 'Описание отсутствует'))}</blockquote>"
+            if meta.get('links'): post_text += f"\n\n🔗 {escape(meta['links'][0])}"
+            
+            if data.get('cover') and os.path.exists(data['cover']):
+                await bot.send_photo(GROUP_USERNAME, photo=FSInputFile(data['cover']))
+            
+            await bot.send_message(GROUP_USERNAME, post_text, link_preview_options=LinkPreviewOptions(is_disabled=True))
+            
+            cap = f"🤖 Глоссарий: {escape(data['gl'])}\n🤖 Перевод: {escape(data['tr'])}\n🧹 Фильтр: {escape(data['fl'])}"
+            await bot.send_document(GROUP_USERNAME, document=FSInputFile(data['path'], filename=data['name']), caption=cap)
+            
+            await call.message.edit_text("✅ Опубликовано!")
+            return # Выход, так как файлы удаляются в finally
         
-        # 2. Цепочка публикаций
-        first_msg = None
-        if data.get('cover') and os.path.exists(data['cover']):
-            first_msg = await bot.send_photo(GROUP_USERNAME, photo=FSInputFile(data['cover']))
-        
-        msg_text = await bot.send_message(GROUP_USERNAME, post_text, reply_to_message_id=first_msg.message_id if first_msg else None, link_preview_options=LinkPreviewOptions(is_disabled=True))
-        
-        cap = f"🤖 Глоссарий: {escape(data['gl'])}\n🤖 Перевод: {escape(data['tr'])}\n🧹 Фильтр: {escape(data['fl'])}"
-        await bot.send_document(GROUP_USERNAME, document=FSInputFile(data['path'], filename=data['name']), caption=cap, reply_to_message_id=msg_text.message_id)
-        
-        await call.message.edit_text("✅ Опубликовано!")
-        for p in [data['path'], data.get('cover')]:
-            if p and os.path.exists(p): os.remove(p)
-        return await state.clear()
-        
+        except Exception as e:
+            logging.error(f"Ошибка при публикации: {e}")
+            await call.answer("❌ Ошибка публикации", show_alert=True)
+            return
+        finally:
+            for p in [data.get('path'), data.get('cover')]:
+                if p and os.path.exists(p): os.remove(p)
+            await state.clear()
+            return
+
+    # ОБНОВЛЕНИЕ ДАННЫХ (если нажали кнопку смены инструмента)
     await state.update_data(data)
     await call.message.edit_reply_markup(reply_markup=get_tools_kb(data['gl'], data['tr'], data['fl']))
+    await call.answer()
 
 if __name__ == "__main__":
     from aiogram.webhook.aiohttp_server import SimpleRequestHandler, setup_application
