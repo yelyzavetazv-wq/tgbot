@@ -120,10 +120,29 @@ async def handle_docs(message: types.Message):
 async def on_startup(bot: Bot):
     await bot.set_webhook(f"{os.getenv('WEBHOOK_URL')}/webhook")
 
+# --- ЗАПУСК ---
+
+async def set_my_webhook():
+    webhook_url = f"{os.getenv('WEBHOOK_URL')}/webhook"
+    await bot.set_webhook(webhook_url)
+    print(f"Вебхук успешно установлен на: {webhook_url}")
+
 if __name__ == "__main__":
+    # Создаем приложение
     app = web.Application()
+    
+    # Регистрируем хендлер для webhook
     webhook_requests_handler = SimpleRequestHandler(dispatcher=dp, bot=bot)
     webhook_requests_handler.register(app, path="/webhook")
-    dp.startup.register(on_startup)
+    
+    # Настраиваем приложение
     setup_application(app, dp, bot=bot)
-    web.run_app(app, port=int(os.environ.get("PORT", 8080)))
+    
+    # ВАЖНО: Мы сначала запускаем установку вебхука, а потом сервер
+    # Используем loop.run_until_complete для установки вебхука перед запуском сервера
+    loop = asyncio.get_event_loop()
+    loop.run_until_complete(set_my_webhook())
+    
+    # Запуск сервера
+    port = int(os.environ.get("PORT", 8080))
+    web.run_app(app, host="0.0.0.0", port=port)
