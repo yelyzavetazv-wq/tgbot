@@ -5,6 +5,7 @@ import re
 import random
 import asyncio
 import tempfile
+import logging
 from ebooklib import epub, ITEM_COVER, ITEM_IMAGE
 from bs4 import BeautifulSoup
 from html import escape
@@ -22,6 +23,16 @@ from aiogram.client.session.aiohttp import AiohttpSession
 from aiogram.client.session.middlewares.base import BaseRequestMiddleware, NextRequestMiddlewareType
 from aiogram.methods import TelegramMethod
 from aiogram.methods.base import TelegramType
+
+# ============================================================
+# НАСТРОЙКА ЛОГИРОВАНИЯ
+# ============================================================
+
+logging.basicConfig(
+    level=logging.INFO,
+    format='%(asctime)s - %(levelname)s - %(message)s'
+)
+logger = logging.getLogger(__name__)
 
 load_dotenv()
 
@@ -42,6 +53,7 @@ ALLOWED_EXTENSIONS = {
 }
 
 if not TOKEN:
+    logger.error("BOT_TOKEN не найден в переменных окружения или файле .env")
     raise ValueError("ОШИБКА: BOT_TOKEN не найден в переменных окружения или файле .env")
 
 
@@ -138,7 +150,7 @@ def extract_annotation(epub_path):
                             return description.text.strip()[:2000]
         return "Описание отсутствует"
     except Exception as e:
-        print(f"Ошибка парсинга аннотации: {e}")
+        logger.error(f"Ошибка парсинга аннотации: {e}")
         return "Описание отсутствует"
 
 def count_chapters(epub_path):
@@ -163,7 +175,7 @@ def count_chapters(epub_path):
                     break
         return "?"
     except Exception as e:
-        print(f"Ошибка подсчёта глав: {e}")
+        logger.error(f"Ошибка подсчёта глав: {e}")
         return "?"
 
 def extract_tags_from_opf(epub_path):
@@ -193,6 +205,8 @@ def extract_metadata_from_epub(epub_path):
     - Теги (жанры)
     - Ссылки из dc:publisher
     """
+    logger.info(f"📖 Начинаем парсинг EPUB: {epub_path}")
+    
     result = {
         "title_full": "",
         "title_ru": "",
@@ -208,6 +222,7 @@ def extract_metadata_from_epub(epub_path):
         with zipfile.ZipFile(epub_path, 'r') as z:
             for name in z.namelist():
                 if name.endswith('.opf'):
+                    logger.info(f"📖 Найден OPF-файл: {name}")
                     with z.open(name) as f:
                         content = f.read().decode('utf-8', errors='ignore')
                         soup = BeautifulSoup(content, 'xml')
@@ -224,11 +239,21 @@ def extract_metadata_from_epub(epub_path):
                                 result["title_en"] = parts[1]
                             if len(parts) >= 3:
                                 result["title_original"] = parts[2]
+                            logger.info(f"📖 Название (ru): {result['title_ru']}")
+                            if result['title_en']:
+                                logger.info(f"📖 Название (en): {result['title_en']}")
+                            if result['title_original']:
+                                logger.info(f"📖 Название (original): {result['title_original']}")
+                        else:
+                            logger.warning("⚠️ Тег dc:title не найден")
                         
                         # Автор
                         creator = soup.find('dc:creator')
                         if creator and creator.text:
                             result["author"] = creator.text.strip()
+                            logger.info(f"✍ Автор: {result['author']}")
+                        else:
+                            logger.warning("⚠️ Тег dc:creator не найден")
                         
                         # Описание (аннотация)
                         description = soup.find('dc:description')
@@ -240,29 +265,39 @@ def extract_metadata_from_epub(epub_path):
                                 result["annotation"] = '\n'.join(texts)[:2000]
                             else:
                                 result["annotation"] = description.text.strip()[:2000]
+                            logger.info(f"📖 Описание: {result['annotation'][:100]}...")
+                        else:
+                            logger.warning("⚠️ Тег dc:description не найден")
                         
                         # Теги (жанры)
                         for subject in soup.find_all('dc:subject'):
                             if subject.text:
                                 result["tags"].append(subject.text.strip())
+                        if result["tags"]:
+                            logger.info(f"🏷️ Теги: {result['tags']}")
+                        else:
+                            logger.warning("⚠️ Теги dc:subject не найдены")
                         
                         # --- ССЫЛКИ ИЗ dc:publisher (с проверкой) ---
                         publisher = soup.find('dc:publisher')
                         if publisher and publisher.text:
-                            print(f"🔍 Найден тег publisher: {publisher.text}")  # <- ПРОВЕРКА
+                            logger.info(f"🔍 Найден тег publisher: {publisher.text}")
                             links = publisher.text.strip().split()
-                            print(f"🔍 Ссылки после разбивки: {links}")  # <- ПРОВЕРКА
+                            logger.info(f"🔍 Ссылки после разбивки: {links}")
                             for link in links:
                                 if link.startswith('http'):
                                     result["publisher_links"].append(link)
-                            print(f"🔍 Сохранено ссылок: {len(result['publisher_links'])}")  # <- ПРОВЕРКА
+                            logger.info(f"🔍 Сохранено ссылок: {len(result['publisher_links'])}")
+                            if result["publisher_links"]:
+                                logger.info(f"🔍 Ссылки: {result['publisher_links']}")
                         else:
-                            print("🔍 Тег publisher не найден или пуст")  # <- ПРОВЕРКА
+                            logger.warning("⚠️ Тег dc:publisher не найден или пуст")
                         
                     break
     except Exception as e:
-        print(f"Ошибка парсинга метаданных EPUB: {e}")
+        logger.error(f"Ошибка парсинга метаданных EPUB: {e}")
     
+    logger.info(f"📊 Итоговые метаданные: {result}")
     return result
 
 
@@ -350,6 +385,7 @@ def format_text(metadata, chapters, status):
     for link in links:
         text += f"\n🔗 {escape(link)}"
 
+    logger.info(f"📝 Сформирован пост. Количество ссылок: {len(links)}")
     return text
 
 def format_files(glossary, translation, filter_choice):
@@ -369,6 +405,7 @@ async def wait_and_publish(chat_id: int, state: FSMContext, wait_time: int = 60)
     Ждёт 60 секунд после получения EPUB.
     Если за это время пользователь ничего не выбрал — публикует с настройками по умолчанию.
     """
+    logger.info(f"⏱️ Запущен таймер на {wait_time} секунд для пользователя {chat_id}")
     await asyncio.sleep(wait_time)
     
     data = await state.get_data()
@@ -377,9 +414,12 @@ async def wait_and_publish(chat_id: int, state: FSMContext, wait_time: int = 60)
     if epub_path:
         status = data.get("status")
         if not status:
+            logger.info(f"⏰ Время ожидания истекло для пользователя {chat_id}. Публикую с настройками по умолчанию.")
             await bot.send_message(chat_id, "⏰ Время ожидания истекло. Публикую с настройками по умолчанию.")
             await state.update_data(status="?")
             await publish_to_forum(chat_id, state)
+    else:
+        logger.warning(f"⏰ Время ожидания истекло для пользователя {chat_id}, но EPUB не найден.")
 
 
 # ============================================================
@@ -389,6 +429,7 @@ async def wait_and_publish(chat_id: int, state: FSMContext, wait_time: int = 60)
 @dp.message(Command("start"))
 async def start(message: types.Message, state: FSMContext):
     """Команда /start — приветствие и инструкция"""
+    logger.info(f"💬 Команда /start от пользователя {message.chat.id}")
     await state.clear()
     await message.answer(
         "📚 Отправьте файл книги в формате .epub\n"
@@ -403,11 +444,15 @@ async def handle_docs(message: types.Message, state: FSMContext):
     - .epub → первый становится основным (парсится), остальные — дополнительные
     - .fb2, .doc, .docx, .txt, .mobi, .pdf → дополнительные файлы
     """
+    logger.info(f"📎 Получен файл от пользователя {message.chat.id}: {message.document.file_name}")
+    
     # Проверка: только из лички
     if message.chat.type != "private":
+        logger.info(f"⛔ Файл из группы {message.chat.id} игнорируется")
         return
 
     if message.document.file_size > MAX_FILE_SIZE:
+        logger.warning(f"⚠️ Файл слишком большой: {message.document.file_size} байт")
         await message.answer("❌ Файл слишком большой. Максимальный размер: 20 МБ.")
         return
 
@@ -417,16 +462,19 @@ async def handle_docs(message: types.Message, state: FSMContext):
     
     # --- ПРОВЕРКА НА РАЗРЕШЁННЫЕ РАСШИРЕНИЯ ---
     if ext not in ALLOWED_EXTENSIONS:
+        logger.warning(f"⚠️ Неподдерживаемый формат: {ext} от пользователя {message.chat.id}")
         await message.answer(f"❌ Формат {ext} не поддерживается. Разрешены: {', '.join(ALLOWED_EXTENSIONS)}")
         return
 
     path = os.path.join(TEMP_DIR, f"{uuid.uuid4().hex}_{name}")
     await bot.download(file_info, destination=path)
+    logger.info(f"💾 Файл сохранён: {path}")
 
     current_data = await state.get_data()
 
     # --- ОСНОВНОЙ ФАЙЛ: ПЕРВЫЙ EPUB ---
     if ext == ".epub" and not current_data.get("epub"):
+        logger.info(f"📚 Это первый EPUB от пользователя {message.chat.id} → делаем основным")
         epub_path = path
         cover_path = await asyncio.to_thread(extract_cover, path)
         metadata = await asyncio.to_thread(extract_metadata_from_epub, path)
@@ -444,6 +492,7 @@ async def handle_docs(message: types.Message, state: FSMContext):
         if not current_data.get("timer_started"):
             await state.update_data(timer_started=True)
             asyncio.create_task(wait_and_publish(message.chat.id, state))
+            logger.info(f"⏱️ Таймер запущен для пользователя {message.chat.id}")
 
         # Показываем кнопки, если ещё не показывали
         if not current_data.get("keyboard_sent"):
@@ -452,6 +501,7 @@ async def handle_docs(message: types.Message, state: FSMContext):
 
     # --- ДОПОЛНИТЕЛЬНЫЕ ФАЙЛЫ (включая второй и последующие EPUB) ---
     else:
+        logger.info(f"➕ Дополнительный файл от пользователя {message.chat.id}: {name}")
         additional_files = current_data.get("additional_files", [])
         additional_files.append({
             "path": path,
@@ -473,6 +523,8 @@ async def handle_docs(message: types.Message, state: FSMContext):
 @dp.callback_query()
 async def callbacks(call: types.CallbackQuery, state: FSMContext):
     """Обрабатывает нажатия на кнопки"""
+    logger.info(f"🔘 Нажата кнопка: {call.data} от пользователя {call.from_user.id}")
+    
     data_parts = call.data.split(":", 1)
     cat = data_parts[0]
     val = data_parts[1] if len(data_parts) > 1 else ""
@@ -482,7 +534,7 @@ async def callbacks(call: types.CallbackQuery, state: FSMContext):
     try:
         await call.message.delete()
     except Exception as e:
-        print(f"Ошибка удаления сообщения: {e}")
+        logger.error(f"Ошибка удаления сообщения: {e}")
 
     if cat == "glossary":
         if val == "other":
@@ -510,6 +562,7 @@ async def callbacks(call: types.CallbackQuery, state: FSMContext):
 
     elif cat == "status":
         await state.update_data(status=val)
+        logger.info(f"📌 Выбран статус: {val} для пользователя {call.from_user.id}")
         await publish_to_forum(call.message.chat.id, state)
 
 
@@ -519,18 +572,21 @@ async def callbacks(call: types.CallbackQuery, state: FSMContext):
 
 @dp.message(BookForm.waiting_for_glossary)
 async def set_glossary(message: types.Message, state: FSMContext):
+    logger.info(f"✏️ Пользователь {message.chat.id} ввёл глоссарий: {message.text}")
     await state.update_data(glossary=message.text)
     await state.set_state(None) 
     await message.answer("🤖 Выберите модель для Перевода:", reply_markup=translation_keyboard())
 
 @dp.message(BookForm.waiting_for_translation)
 async def set_translation(message: types.Message, state: FSMContext):
+    logger.info(f"✏️ Пользователь {message.chat.id} ввёл перевод: {message.text}")
     await state.update_data(translation=message.text)
     await state.set_state(None)
     await message.answer("🧹 Выберите Фильтр:", reply_markup=filter_keyboard())
 
 @dp.message(BookForm.waiting_for_filter)
 async def set_filter(message: types.Message, state: FSMContext):
+    logger.info(f"✏️ Пользователь {message.chat.id} ввёл фильтр: {message.text}")
     await state.update_data(filter=message.text)
     await state.set_state(None)
     await message.answer("📌 Выберите Статус:", reply_markup=status_keyboard())
@@ -542,14 +598,17 @@ async def set_filter(message: types.Message, state: FSMContext):
 
 def cleanup_files(data: dict):
     """Удаляет все временные файлы (и основные, и дополнительные)"""
+    logger.info("🧹 Начинаем очистку временных файлов")
+    
     # Основные
     for key in ["epub", "cover"]:
         file_path = data.get(key)
         if file_path and os.path.exists(file_path):
             try:
                 os.remove(file_path)
+                logger.info(f"🗑️ Удалён файл: {file_path}")
             except Exception as e:
-                print(f"Ошибка удаления {file_path}: {e}")
+                logger.error(f"Ошибка удаления {file_path}: {e}")
     
     # Дополнительные
     additional_files = data.get("additional_files", [])
@@ -558,8 +617,9 @@ def cleanup_files(data: dict):
         if file_path and os.path.exists(file_path):
             try:
                 os.remove(file_path)
+                logger.info(f"🗑️ Удалён дополнительный файл: {file_path}")
             except Exception as e:
-                print(f"Ошибка удаления {file_path}: {e}")
+                logger.error(f"Ошибка удаления {file_path}: {e}")
 
 
 # ============================================================
@@ -574,6 +634,7 @@ async def publish_to_forum(chat_id: int, state: FSMContext):
     - EPUB файл (с оригинальным именем)
     - Все дополнительные файлы (с оригинальными именами)
     """
+    logger.info(f"📤 Начинаем публикацию для пользователя {chat_id}")
     data = await state.get_data()
 
     try:
@@ -582,11 +643,14 @@ async def publish_to_forum(chat_id: int, state: FSMContext):
         metadata = data.get("metadata", {})
         
         if not epub_path:
+            logger.error(f"❌ Ошибка: Файл EPUB отсутствует для пользователя {chat_id}")
             await bot.send_message(chat_id, "❌ Ошибка: Файл EPUB отсутствует.")
             return
 
-        if not metadata:
-            metadata = await asyncio.to_thread(extract_metadata_from_epub, epub_path)
+        # --- ПРИНУДИТЕЛЬНО ПАРСИМ ЗАНОВО (для проверки) ---
+        logger.info("🔄 Принудительный парсинг метаданных перед публикацией...")
+        metadata = await asyncio.to_thread(extract_metadata_from_epub, epub_path)
+        logger.info(f"📊 Метаданные после парсинга: {metadata}")
 
         chapters = await asyncio.to_thread(count_chapters, epub_path) if epub_path else "?"
         glossary = data.get("glossary", "?")
@@ -602,17 +666,20 @@ async def publish_to_forum(chat_id: int, state: FSMContext):
         if not safe_title:
             safe_title = "book"
 
-        # Для канала — темы не создаём
-        topic_id = None
+        logger.info(f"📝 Название для публикации: {title_topic}")
 
         # --- 1. Отправляем обложку ---
         if cover and os.path.exists(cover):
+            logger.info("🖼️ Отправляем обложку")
             await bot.send_photo(
                 chat_id=GROUP_USERNAME,
                 photo=FSInputFile(cover),
             )
+        else:
+            logger.warning("⚠️ Обложка не найдена")
 
         # --- 2. Отправляем описание ---
+        logger.info("📝 Отправляем описание")
         await bot.send_message(
             chat_id=GROUP_USERNAME,
             text=post_text,
@@ -624,7 +691,7 @@ async def publish_to_forum(chat_id: int, state: FSMContext):
             epub_filename = data.get("epub_original_name")
             if not epub_filename:
                 epub_filename = f"{safe_title}.epub"
-            
+            logger.info(f"📄 Отправляем основной EPUB: {epub_filename}")
             await bot.send_document(
                 chat_id=GROUP_USERNAME,
                 document=FSInputFile(epub_path, filename=epub_filename),
@@ -633,20 +700,24 @@ async def publish_to_forum(chat_id: int, state: FSMContext):
 
         # --- 4. Отправляем дополнительные файлы (с ОРИГИНАЛЬНЫМИ именами) ---
         additional_files = data.get("additional_files", [])
-        for file_info in additional_files:
-            if os.path.exists(file_info["path"]):
-                await bot.send_document(
-                    chat_id=GROUP_USERNAME,
-                    document=FSInputFile(file_info["path"], filename=file_info["name"]),
-                )
+        if additional_files:
+            logger.info(f"📎 Отправляем {len(additional_files)} дополнительных файлов")
+            for file_info in additional_files:
+                if os.path.exists(file_info["path"]):
+                    logger.info(f"📎 Отправляем: {file_info['name']}")
+                    await bot.send_document(
+                        chat_id=GROUP_USERNAME,
+                        document=FSInputFile(file_info["path"], filename=file_info["name"]),
+                    )
 
         await bot.send_message(chat_id=chat_id, text=f"✅ Книга '{escape(title_topic)}' успешно опубликована!")
+        logger.info(f"✅ Публикация завершена для пользователя {chat_id}")
         
         await state.clear() 
         cleanup_files(data)
 
     except Exception as e:
-        print(f"Ошибка публикации: {e}")
+        logger.error(f"❌ Ошибка публикации для пользователя {chat_id}: {e}")
         await bot.send_message(chat_id=chat_id, text=f"❌ Ошибка публикации:\n{escape(str(e))}")
 
 
@@ -657,14 +728,14 @@ async def publish_to_forum(chat_id: int, state: FSMContext):
 async def on_startup(bot: Bot):
     if WEBHOOK_URL:
         await bot.set_webhook(f"{WEBHOOK_URL}/webhook", drop_pending_updates=True)
-        print(f"Webhook установлен на {WEBHOOK_URL}/webhook")
+        logger.info(f"Webhook установлен на {WEBHOOK_URL}/webhook")
 
 if __name__ == "__main__":
     PORT = os.environ.get("PORT")
     if PORT:
         # --- РЕЖИМ СЕРВЕРА (Render / Heroku) ---
         port_num = int(PORT)
-        print(f"Запуск в режиме Webhook через aiohttp на порту {port_num}...")
+        logger.info(f"Запуск в режиме Webhook через aiohttp на порту {port_num}...")
         
         app = web.Application()
         
@@ -683,10 +754,10 @@ if __name__ == "__main__":
         web.run_app(app, host="0.0.0.0", port=port_num)
     else:
         # --- РЕЖИМ ЛОКАЛЬНОГО ПК (Polling) ---
-        print("PORT не найден. Запуск в режиме Polling...")
+        logger.info("PORT не найден. Запуск в режиме Polling...")
         async def main():
             await bot.delete_webhook(drop_pending_updates=True)
-            print("Бот запущен!")
+            logger.info("Бот запущен!")
             await dp.start_polling(bot)
 
         asyncio.run(main())
