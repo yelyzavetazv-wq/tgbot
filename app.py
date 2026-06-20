@@ -133,6 +133,8 @@ async def handle_docs(message: types.Message, state: FSMContext):
     if ext == '.epub' and 'path' not in data:
         meta = await asyncio.to_thread(extract_metadata, path)
         cover = await asyncio.to_thread(extract_cover, path)
+        await state.update_data(path=path, name=message.document.file_name, meta=meta, cover=cover, extras=extras, gl=GL_OPTIONS[0], tr=TR_OPTIONS[0], fl=FL_OPTIONS[0])
+        await state.set_state(BookForm.choosing_tools)
         await state.update_data(path=path, name=message.document.file_name, meta=meta, cover=cover, extras=extras)
         await state.set_state(BookForm.choosing_tools)
         await message.answer("✅ EPUB принят. Жду 30 сек для доп. файлов...", reply_markup=get_tools_kb(GL_OPTIONS[0], TR_OPTIONS[0], FL_OPTIONS[0]))
@@ -160,6 +162,10 @@ async def callbacks(call: types.CallbackQuery, state: FSMContext):
     
     elif call.data == "pub_done":
         try:
+            # Используем .get() с дефолтными значениями, чтобы не было ошибки
+            gl = data.get('gl', GL_OPTIONS[0])
+            tr = data.get('tr', TR_OPTIONS[0])
+            fl = data.get('fl', FL_OPTIONS[0])
             meta = data['meta']
             icons = ["🏴‍☠️", "🇬🇧", "🌐"]
             post_text = ""
