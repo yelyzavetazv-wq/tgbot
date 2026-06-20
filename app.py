@@ -1,29 +1,38 @@
-import os, uuid, zipfile, re, asyncio, tempfile
-from ebooklib import epub, ITEM_COVER, ITEM_IMAGE
-from bs4 import BeautifulSoup
+import os, uuid, zipfile, re, asyncio, tempfile, logging
 from html import escape
+from bs4 import BeautifulSoup
 from dotenv import load_dotenv
 from aiohttp import web
-from aiogram import Bot, Dispatcher, types, F
-from aiogram.client.default import DefaultBotProperties
+from aiogram import Bot, Dispatcher, F, types
 from aiogram.filters import Command
-from aiogram.fsm.storage.memory import MemoryStorage
 from aiogram.fsm.context import FSMContext
+from aiogram.fsm.state import State, StatesGroup
+from aiogram.fsm.storage.memory import MemoryStorage
 from aiogram.types import InlineKeyboardMarkup, InlineKeyboardButton, FSInputFile
-from aiogram.webhook.aiohttp_server import SimpleRequestHandler, setup_application
 
 load_dotenv()
+logging.basicConfig(level=logging.INFO)
+
 TOKEN = os.getenv("BOT_TOKEN")
 GROUP_USERNAME = os.getenv("GROUP_USERNAME")
-bot = Bot(token=TOKEN, default=DefaultBotProperties(parse_mode="HTML"))
+ALLOWED_EXTENSIONS = {'.epub'}
+
+bot = Bot(token=TOKEN)
 dp = Dispatcher(storage=MemoryStorage())
 
-# --- УТИЛИТЫ ---
-def secure_filename(name): return re.sub(r'[^\w\-.]', '_', name)
-def clean_hashtag(tag): return re.sub(r'[^\w]+', '_', tag).strip('_')
+class BookForm(StatesGroup):
+    choosing_tools = State()
 
-def extract_metadata_from_epub(epub_path):
-    result = {"title_ru": "", "title_en": "", "author": "", "annotation": "Описание отсутствует", "tags": []}
+def get_tools_kb(gl, tr, fl):
+    return InlineKeyboardMarkup(inline_keyboard=[
+        [InlineKeyboardButton(text=f"📖 Глоссарий: {gl}", callback_data="change_gl")],
+        [InlineKeyboardButton(text=f"🌐 Перевод: {tr}", callback_data="change_tr")],
+        [InlineKeyboardButton(text=f"🧹 Фильтр: {fl}", callback_data="change_fl")],
+        [InlineKeyboardButton(text="✅ ПУБЛИКАЦИЯ", callback_data="pub_done")]
+    ])
+
+def extract_metadata(epub_path):
+    meta = {"title_ru": "Без названия", "title_en": "", "author": "", "tags": [], "links": [], "desc": "Описание отсутствует"}
     try:
         with zipfile.ZipFile(epub_path, 'r') as z:
             for name in z.namelist():
@@ -33,87 +42,71 @@ def extract_metadata_from_epub(epub_path):
                         t = soup.find('dc:title')
                         if t and t.text:
                             parts = [p.strip() for p in t.text.split('/')]
-                            result["title_ru"] = parts[0]
-                            if len(parts) > 1: result["title_en"] = parts[1]
+                            meta["title_ru"] = parts[0]
+                            if len(parts) > 1: meta["title_en"] = parts[1]
                         c = soup.find('dc:creator')
-                        if c: result["author"] = c.text.strip()
-                        desc = soup.find('dc:description')
-                        if desc and desc.text:
-                            inner = BeautifulSoup(desc.text, 'html.parser')
-                            result["annotation"] = inner.get_text(separator="\n", strip=True)[:2000]
-                        for s in soup.find_all('dc:subject'):
-                            if s.text: result["tags"].append(s.text.strip())
+                        if c: meta["author"] = c.text.strip()
+                        meta["tags"] = [f"#{re.sub(r'[^a-zA-Zа-яА-Я0-9]', '', tag.text.strip())}" for tag in soup.find_all('dc:subject')]
+                        d = soup.find('dc:description')
+                        if d and d.text:
+                            inner = BeautifulSoup(d.text, 'html.parser')
+                            meta["desc"] = inner.get_text(separator="\n", strip=True)
+                        p = soup.find('dc:publisher')
+                        if p and p.text:
+                            meta["links"] = [l for l in p.text.split() if l.startswith('http')]
+                    break
     except: pass
-    return result
+    return meta
 
-# --- ФОРМАТИРОВАНИЕ ---
-def format_text(metadata, status):
-    text = f"🏴‍☠️ <b>{escape(metadata.get('title_ru') or 'Без названия')}</b>\n"
-    if metadata.get('title_en'): text += f"🇬🇧 {escape(metadata['title_en'])}\n"
-    text += f"\n✍️ Автор: {escape(metadata.get('author') or 'Неизвестен')}\n"
-    text += f"📌 Статус: {escape(status)}\n"
-    if metadata['tags']:
-        text += f"🏷️ Теги: {', '.join([f'#{clean_hashtag(t)}' for t in metadata['tags']])}\n"
-    text += f"\n📖 <b>Описание:</b>\n<blockquote expandable>{escape(metadata['annotation'])}</blockquote>"
-    return text
+@dp.message(Command("start"))
+async def start(message: types.Message):
+    await message.answer("📚 Отправь .epub файл.")
 
-# --- ПУБЛИКАЦИЯ ---
-async def publish_to_forum(chat_id: int, state: FSMContext):
-    data = await state.get_data()
-    meta = data['metadata']
-    
-    # 1. Текст описания
-    await bot.send_message(GROUP_USERNAME, format_text(meta, data['status']))
-    
-    # 2. Файл с инструментами в подписи
-    caption = f"🤖 Глоссарий: {escape(data['glossary'])}\n🤖 Перевод: {escape(data['translation'])}\n🧹 Фильтр: {escape(data['filter'])}"
-    await bot.send_document(
-        GROUP_USERNAME, 
-        FSInputFile(data['epub'], filename=secure_filename(data['name'])),
-        caption=caption
-    )
-    
-    await state.clear()
-    if os.path.exists(data['epub']): os.remove(data['epub'])
-
-# --- ХЕНДЛЕРЫ ---
 @dp.message(F.document)
 async def handle_docs(message: types.Message, state: FSMContext):
-    if not message.document.file_name.endswith(".epub"): return
+    ext = os.path.splitext(message.document.file_name or "")[1].lower()
+    if ext not in ALLOWED_EXTENSIONS:
+        return await message.answer("❌ Только .epub")
+    
     path = os.path.join(tempfile.gettempdir(), f"{uuid.uuid4()}.epub")
     await bot.download(message.document, destination=path)
-    meta = await asyncio.to_thread(extract_metadata_from_epub, path)
-    await state.update_data(epub=path, name=message.document.file_name, metadata=meta)
-    await message.answer("Файл принят. Выберите Глоссарий:", reply_markup=InlineKeyboardMarkup(inline_keyboard=[
-        [InlineKeyboardButton(text="Gemini 3.5", callback_data="gl:Gemini 3.5")],
-        [InlineKeyboardButton(text="Gemini 3", callback_data="gl:Gemini 3")]
-    ]))
+    meta = await asyncio.to_thread(extract_metadata, path)
+    
+    await state.update_data(path=path, name=message.document.file_name, meta=meta, gl="Gemini 3", tr="Gemini 3.5", fl="Нет")
+    await message.answer(f"✅ {message.document.file_name}\nНастрой инструменты:", reply_markup=get_tools_kb("Gemini 3", "Gemini 3.5", "Нет"))
+    await state.set_state(BookForm.choosing_tools)
 
-@dp.callback_query(F.data.startswith("gl:"))
-async def set_gl(call: types.CallbackQuery, state: FSMContext):
-    await state.update_data(glossary=call.data.split(":")[1])
-    await call.message.edit_text("Выберите Перевод:", reply_markup=InlineKeyboardMarkup(inline_keyboard=[
-        [InlineKeyboardButton(text="Gemini 3.5", callback_data="tr:Gemini 3.5")],
-        [InlineKeyboardButton(text="Gemini 3", callback_data="tr:Gemini 3")]
-    ]))
-
-@dp.callback_query(F.data.startswith("tr:"))
-async def set_tr(call: types.CallbackQuery, state: FSMContext):
-    await state.update_data(translation=call.data.split(":")[1])
-    await call.message.edit_text("Выберите Фильтр:", reply_markup=InlineKeyboardMarkup(inline_keyboard=[
-        [InlineKeyboardButton(text="ChatGPT", callback_data="fl:ChatGPT")],
-        [InlineKeyboardButton(text="Нет", callback_data="fl:none")]
-    ]))
-
-@dp.callback_query(F.data.startswith("fl:"))
-async def set_fl(call: types.CallbackQuery, state: FSMContext):
-    await state.update_data(filter=call.data.split(":")[1], status="в процессе")
-    await publish_to_forum(call.message.chat.id, state)
-    await call.message.edit_text("✅ Опубликовано!")
+@dp.callback_query(BookForm.choosing_tools)
+async def callbacks(call: types.CallbackQuery, state: FSMContext):
+    data = await state.get_data()
+    if call.data == "change_gl": data['gl'] = "GPT-4o" if data['gl'] == "Gemini 3" else "Gemini 3"
+    elif call.data == "change_tr": data['tr'] = "DeepL" if data['tr'] == "Gemini 3.5" else "Gemini 3.5"
+    elif call.data == "change_fl": data['fl'] = "DeepSeek" if data['fl'] == "Нет" else "Нет"
+    elif call.data == "pub_done":
+        meta = data['meta']
+        # Формирование текста поста
+        post_text = f"🏴‍☠️ <b>{escape(meta['title_ru'])}</b>\n"
+        if meta['title_en']: post_text += f"🇬🇧 {escape(meta['title_en'])}\n"
+        post_text += f"\n✍️ Автор: {escape(meta['author'])}\n\n🏷 {' '.join(meta['tags'])}"
+        post_text += f"\n\n📖 <b>Описание:</b>\n<blockquote expandable>{escape(meta['desc'])}</blockquote>"
+        if meta['links']: post_text += f"\n\n🔗 {escape(meta['links'][0])}"
+        
+        # Инструменты в подпись
+        cap = f"🤖 Глоссарий: {data['gl']}\n🤖 Перевод: {data['tr']}\n🧹 Фильтр: {data['fl']}"
+        
+        await bot.send_message(GROUP_USERNAME, post_text, parse_mode="HTML")
+        await bot.send_document(GROUP_USERNAME, FSInputFile(data['path'], filename=data['name']), caption=cap, parse_mode="HTML")
+        await call.message.edit_text("✅ Опубликовано!")
+        if os.path.exists(data['path']): os.remove(data['path'])
+        return await state.clear()
+        
+    await state.update_data(data)
+    await call.message.edit_reply_markup(reply_markup=get_tools_kb(data['gl'], data['tr'], data['fl']))
 
 if __name__ == "__main__":
+    from aiogram.webhook.aiohttp_server import SimpleRequestHandler, setup_application
     app = web.Application()
-    webhook_requests_handler = SimpleRequestHandler(dispatcher=dp, bot=bot)
-    webhook_requests_handler.register(app, path="/webhook")
+    webhook_handler = SimpleRequestHandler(dispatcher=dp, bot=bot)
+    webhook_handler.register(app, path="/webhook")
     setup_application(app, dp, bot=bot)
     web.run_app(app, port=int(os.environ.get("PORT", 8080)))
