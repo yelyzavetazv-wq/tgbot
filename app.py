@@ -35,6 +35,12 @@ WEBHOOK_URL = os.getenv("WEBHOOK_URL")
 MAX_FILE_SIZE = 20 * 1024 * 1024  # 20 МБ
 TEMP_DIR = tempfile.gettempdir()
 
+# РАЗРЕШЁННЫЕ РАСШИРЕНИЯ ФАЙЛОВ (только для книг)
+ALLOWED_EXTENSIONS = {
+    '.epub', '.fb2', '.doc', '.docx', '.txt',
+    '.mobi', '.azw', '.azw3', '.pdf', '.djvu'
+}
+
 if not TOKEN:
     raise ValueError("ОШИБКА: BOT_TOKEN не найден в переменных окружения или файле .env")
 
@@ -254,10 +260,6 @@ def extract_metadata_from_epub(epub_path):
     
     return result
 
-def parse_info_from_epub(epub_path):
-    """Обёртка для extract_metadata_from_epub"""
-    return extract_metadata_from_epub(epub_path)
-
 
 # ============================================================
 # БЛОК 6: КЛАВИАТУРЫ (кнопки для пользователя)
@@ -385,7 +387,7 @@ async def start(message: types.Message, state: FSMContext):
     await state.clear()
     await message.answer(
         "📚 Отправьте файл книги в формате .epub\n"
-        "➕ Дополнительно можно отправить: .fb2, .doc, .docx, .txt\n"
+        "➕ Дополнительно можно отправить: .fb2, .doc, .docx, .txt, .mobi, .pdf\n"
         "⏱️ Бот подождёт 60 секунд, чтобы вы могли добавить файлы."
     )
 
@@ -393,8 +395,8 @@ async def start(message: types.Message, state: FSMContext):
 async def handle_docs(message: types.Message, state: FSMContext):
     """
     Принимает файлы ТОЛЬКО из личных сообщений.
-    - .epub → основной файл, парсит метаданные
-    - .fb2, .doc, .docx, .txt → дополнительные файлы (просто сохраняет)
+    - .epub → первый становится основным (парсится), остальные — дополнительные
+    - .fb2, .doc, .docx, .txt, .mobi, .pdf → дополнительные файлы
     """
     # Проверка: только из лички
     if message.chat.type != "private":
@@ -406,26 +408,20 @@ async def handle_docs(message: types.Message, state: FSMContext):
 
     file_info = await bot.get_file(message.document.file_id)
     name = secure_filename(message.document.file_name)
-    path = os.path.join(TEMP_DIR, f"{uuid.uuid4().hex}_{name}")
+    ext = os.path.splitext(name)[1].lower()
+    
+    # --- ПРОВЕРКА НА РАЗРЕШЁННЫЕ РАСШИРЕНИЯ ---
+    if ext not in ALLOWED_EXTENSIONS:
+        await message.answer(f"❌ Формат {ext} не поддерживается. Разрешены: {', '.join(ALLOWED_EXTENSIONS)}")
+        return
 
+    path = os.path.join(TEMP_DIR, f"{uuid.uuid4().hex}_{name}")
     await bot.download(file_info, destination=path)
 
-    ext = os.path.splitext(name)[1].lower()
     current_data = await state.get_data()
 
-    # --- ОСНОВНОЙ ФАЙЛ: EPUB ---
-    if ext == ".epub":
-        epub_path = current_data.get("epub")
-        cover_path = current_data.get("cover")
-        keyboard_sent = current_data.get("keyboard_sent", False)
-
-        if epub_path and os.path.exists(epub_path):
-            try: os.remove(epub_path)
-            except Exception: pass
-        if cover_path and os.path.exists(cover_path):
-            try: os.remove(cover_path)
-            except Exception: pass
-
+    # --- ОСНОВНОЙ ФАЙЛ: ПЕРВЫЙ EPUB ---
+    if ext == ".epub" and not current_data.get("epub"):
         epub_path = path
         cover_path = await asyncio.to_thread(extract_cover, path)
         metadata = await asyncio.to_thread(extract_metadata_from_epub, path)
@@ -433,10 +429,11 @@ async def handle_docs(message: types.Message, state: FSMContext):
         await state.update_data(
             epub=epub_path,
             cover=cover_path,
-            metadata=metadata
+            metadata=metadata,
+            epub_original_name=name  # сохраняем оригинальное имя
         )
 
-        await message.answer(f"✅ Получен EPUB: {name}")
+        await message.answer(f"✅ Получен основной EPUB: {name}")
 
         # Запускаем таймер, если ещё не запущен
         if not current_data.get("timer_started"):
@@ -444,12 +441,12 @@ async def handle_docs(message: types.Message, state: FSMContext):
             asyncio.create_task(wait_and_publish(message.chat.id, state))
 
         # Показываем кнопки, если ещё не показывали
-        if not keyboard_sent:
+        if not current_data.get("keyboard_sent"):
             await state.update_data(keyboard_sent=True)
             await message.answer("📚 Книга загружена! Выберите Глоссарий:", reply_markup=glossary_keyboard())
 
-    # --- ДОПОЛНИТЕЛЬНЫЕ ФАЙЛЫ ---
-    elif ext in [".fb2", ".doc", ".docx", ".txt"]:
+    # --- ДОПОЛНИТЕЛЬНЫЕ ФАЙЛЫ (включая второй и последующие EPUB) ---
+    else:
         additional_files = current_data.get("additional_files", [])
         additional_files.append({
             "path": path,
@@ -457,12 +454,11 @@ async def handle_docs(message: types.Message, state: FSMContext):
             "ext": ext
         })
         await state.update_data(additional_files=additional_files)
-        await message.answer(f"✅ Получен дополнительный файл: {name}")
-
-    else:
-        await message.answer(f"❌ Неподдерживаемый формат: {ext}")
-        if os.path.exists(path):
-            os.remove(path)
+        
+        if ext == ".epub":
+            await message.answer(f"✅ Получен дополнительный EPUB: {name}")
+        else:
+            await message.answer(f"✅ Получен дополнительный файл: {name}")
 
 
 # ============================================================
@@ -570,8 +566,8 @@ async def publish_to_forum(chat_id: int, state: FSMContext):
     Публикует книгу в канал:
     - Обложка
     - Описание (из EPUB)
-    - EPUB файл
-    - Все дополнительные файлы (.fb2, .doc, .docx, .txt)
+    - EPUB файл (с оригинальным именем)
+    - Все дополнительные файлы (с оригинальными именами)
     """
     data = await state.get_data()
 
@@ -618,15 +614,19 @@ async def publish_to_forum(chat_id: int, state: FSMContext):
             link_preview_options=LinkPreviewOptions(is_disabled=True),
         )
 
-        # --- 3. Отправляем основной EPUB ---
+        # --- 3. Отправляем основной EPUB (с ОРИГИНАЛЬНЫМ именем) ---
         if epub_path and os.path.exists(epub_path):
+            epub_filename = data.get("epub_original_name")
+            if not epub_filename:
+                epub_filename = f"{safe_title}.epub"
+            
             await bot.send_document(
                 chat_id=GROUP_USERNAME,
-                document=FSInputFile(epub_path, filename=f"{safe_title}.epub"),
+                document=FSInputFile(epub_path, filename=epub_filename),
                 caption=post_files,
             )
 
-        # --- 4. Отправляем дополнительные файлы ---
+        # --- 4. Отправляем дополнительные файлы (с ОРИГИНАЛЬНЫМИ именами) ---
         additional_files = data.get("additional_files", [])
         for file_info in additional_files:
             if os.path.exists(file_info["path"]):
