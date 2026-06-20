@@ -25,16 +25,16 @@ dp = Dispatcher(storage=MemoryStorage())
 class BookForm(StatesGroup):
     choosing_tools = State()
 
-# --- ИНСТРУМЕНТЫ И КНОПКИ ---
+# --- КЛАВИАТУРА ---
 def get_tools_kb(gl, tr, fl):
     return InlineKeyboardMarkup(inline_keyboard=[
-        [InlineKeyboardButton(text=f"📖 Глоссарий: {gl}", callback_data="change_gl")],
-        [InlineKeyboardButton(text=f"🌐 Перевод: {tr}", callback_data="change_tr")],
-        [InlineKeyboardButton(text=f"🧹 Фильтр: {fl}", callback_data="change_fl")],
+        [InlineKeyboardButton(text=f"📖 Глоссарий: {gl}", callback_data="gl_switch")],
+        [InlineKeyboardButton(text=f"🌐 Перевод: {tr}", callback_data="tr_switch")],
+        [InlineKeyboardButton(text=f"🧹 Фильтр: {fl}", callback_data="fl_switch")],
         [InlineKeyboardButton(text="✅ ПУБЛИКАЦИЯ", callback_data="pub_done")]
     ])
 
-# --- ПАРСИНГ ---
+# --- ПАРСИНГ (оставляем прежним) ---
 def extract_cover(epub_path):
     try:
         with zipfile.ZipFile(epub_path, 'r') as z:
@@ -44,12 +44,9 @@ def extract_cover(epub_path):
                     soup = BeautifulSoup(f.read(), 'xml')
                     img = soup.find('image')
                     if img and img.has_attr('xlink:href'): cover_filename = img['xlink:href']
-            
             if not cover_filename:
                 for name in z.namelist():
-                    if name.lower().endswith(('.jpg', '.jpeg', '.png')):
-                        cover_filename = name; break
-            
+                    if name.lower().endswith(('.jpg', '.jpeg', '.png')): cover_filename = name; break
             if cover_filename:
                 for name in z.namelist():
                     if name.endswith(cover_filename):
@@ -95,36 +92,44 @@ def count_chapters(epub_path):
     return "?"
 
 # --- ХЕНДЛЕРЫ ---
-@dp.message(Command("start"))
-async def start(message: types.Message):
-    if message.chat.type == "private": await message.answer("📚 Отправь .epub файл.")
-
 @dp.message(F.document)
 async def handle_docs(message: types.Message, state: FSMContext):
     if message.chat.type != "private": return
-    if os.path.splitext(message.document.file_name or "")[1].lower() not in ALLOWED_EXTENSIONS:
-        return await message.answer("❌ Только .epub")
-    
     path = os.path.join(TEMP_DIR, f"{uuid.uuid4()}.epub")
     await bot.download(message.document, destination=path)
     meta = await asyncio.to_thread(extract_metadata, path)
     cover = await asyncio.to_thread(extract_cover, path)
     
-    await state.update_data(path=path, name=message.document.file_name, meta=meta, cover=cover, gl="Gemini 3", tr="Gemini 3.5", fl="Нет")
-    await message.answer(f"✅ {message.document.file_name}\nНастрой инструменты:", reply_markup=get_tools_kb("Gemini 3", "Gemini 3.5", "Нет"))
+    # Умолчания при загрузке
+    await state.update_data(path=path, name=message.document.file_name, meta=meta, cover=cover, 
+                            gl="Gemini 3.0", tr="Gemini 3.5", fl="Нет")
+    
+    await message.answer(f"✅ {message.document.file_name}\nНастройте инструменты:", 
+                         reply_markup=get_tools_kb("Gemini 3.0", "Gemini 3.5", "Нет"))
     await state.set_state(BookForm.choosing_tools)
 
 @dp.callback_query(BookForm.choosing_tools)
 async def callbacks(call: types.CallbackQuery, state: FSMContext):
     data = await state.get_data()
-    if call.data == "change_gl": data['gl'] = "Gemini 3.5" if data['gl'] == "Gemini 3.0" else "Gemini 3.0"
-    elif call.data == "change_tr": data['tr'] = "Gemini 3.5" if data['tr'] == "Gemini 3.0" else "Gemini 3.5"
-    elif call.data == "change_fl": data['fl'] = "DeepSeek" if data['fl'] == "Нет" else "Нет"
+    
+    # Циклическое переключение
+    if call.data == "gl_switch":
+        models = ["Gemini 3.0", "Gemini 3.1", "Gemini 3.5"]
+        idx = (models.index(data['gl']) + 1) % len(models)
+        data['gl'] = models[idx]
+    elif call.data == "tr_switch":
+        models = ["Gemini 3.0", "Gemini 3.1", "Gemini 3.5"]
+        idx = (models.index(data['tr']) + 1) % len(models)
+        data['tr'] = models[idx]
+    elif call.data == "fl_switch":
+        filters = ["Нет", "ChatGPT", "DeepSeek"]
+        idx = (filters.index(data['fl']) + 1) % len(filters)
+        data['fl'] = filters[idx]
+        
     elif call.data == "pub_done":
         meta = data['meta']
-        # 1. Текст описания
-        icons = ["🏴‍☠️", "🇬🇧", "🌐"]
         post_text = ""
+        icons = ["🏴‍☠️", "🇬🇧", "🌐"]
         for i, title in enumerate(meta.get('titles', [])):
             icon = icons[i] if i < len(icons) else "🔹"
             post_text += f"{icon} <b>{escape(title)}</b>\n"
@@ -134,15 +139,12 @@ async def callbacks(call: types.CallbackQuery, state: FSMContext):
         post_text += f"\n\n📖 <b>Описание:</b>\n<blockquote expandable>{escape(meta.get('desc', 'Описание отсутствует'))}</blockquote>"
         if meta.get('links'): post_text += f"\n\n🔗 {escape(meta['links'][0])}"
         
-        # 2. Цепочка публикаций
-        first_msg = None
+        # Публикация
         if data.get('cover') and os.path.exists(data['cover']):
-            first_msg = await bot.send_photo(GROUP_USERNAME, photo=FSInputFile(data['cover']))
-        
-        msg_text = await bot.send_message(GROUP_USERNAME, post_text, reply_to_message_id=first_msg.message_id if first_msg else None, link_preview_options=LinkPreviewOptions(is_disabled=True))
-        
+            await bot.send_photo(GROUP_USERNAME, photo=FSInputFile(data['cover']))
+        await bot.send_message(GROUP_USERNAME, post_text, link_preview_options=LinkPreviewOptions(is_disabled=True))
         cap = f"🤖 Глоссарий: {escape(data['gl'])}\n🤖 Перевод: {escape(data['tr'])}\n🧹 Фильтр: {escape(data['fl'])}"
-        await bot.send_document(GROUP_USERNAME, document=FSInputFile(data['path'], filename=data['name']), caption=cap, reply_to_message_id=msg_text.message_id)
+        await bot.send_document(GROUP_USERNAME, document=FSInputFile(data['path'], filename=data['name']), caption=cap)
         
         await call.message.edit_text("✅ Опубликовано!")
         for p in [data['path'], data.get('cover')]:
