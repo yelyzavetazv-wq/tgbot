@@ -81,4 +81,18 @@ async def handle_docs(message: types.Message, state: FSMContext):
         await state.update_data(files=files)
 
 if __name__ == "__main__":
-    dp.run_polling(bot)
+    # ---- РЕЖИМ СЕРВЕРА (RENDER) ----
+    # Убираем все попытки запустить start_polling!
+    
+    port_num = int(os.environ.get("PORT", 8080))
+    app = web.Application()
+    
+    # Регистрация вебхука
+    webhook_handler = SimpleRequestHandler(dispatcher=dp, bot=bot)
+    webhook_handler.register(app, path="/webhook")
+    
+    # Важно: эта функция сама настроит бот при старте
+    setup_application(app, dp, bot=bot)
+    
+    # Запуск
+    web.run_app(app, host="0.0.0.0", port=port_num)
