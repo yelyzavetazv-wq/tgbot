@@ -31,7 +31,6 @@ def get_tools_kb(gl, tr, fl):
         [InlineKeyboardButton(text="✅ ПУБЛИКАЦИЯ", callback_data="pub_done")]
     ])
 
-# Парсер метаданных
 def extract_metadata(epub_path):
     meta = {"titles": [], "author": "?", "tags": [], "links": [], "desc": "Описание отсутствует"}
     try:
@@ -40,22 +39,17 @@ def extract_metadata(epub_path):
                 if name.endswith('.opf'):
                     with z.open(name) as f:
                         soup = BeautifulSoup(f.read(), 'xml')
-                        # Названия
                         t = soup.find('dc:title')
                         if t and t.text:
                             meta["titles"] = [p.strip() for p in t.text.split('/') if p.strip()]
-                        # Автор
                         c = soup.find('dc:creator')
                         if c and c.text.strip():
                             meta["author"] = c.text.strip()
-                        # Теги
                         meta["tags"] = [f"#{re.sub(r'[^a-zA-Zа-яА-Я0-9]', '', tag.text.strip())}" for tag in soup.find_all('dc:subject')]
-                        # Описание
                         d = soup.find('dc:description')
                         if d and d.text:
                             inner = BeautifulSoup(d.text, 'html.parser')
                             meta["desc"] = "\n".join([p.get_text(strip=True) for p in inner.find_all('p') if p.get_text(strip=True)])
-                        # Ссылки
                         p = soup.find('dc:publisher')
                         if p and p.text:
                             meta["links"] = [l for l in p.text.split() if l.startswith('http')]
@@ -63,7 +57,6 @@ def extract_metadata(epub_path):
     except: pass
     return meta
 
-# Парсер глав
 def count_chapters(epub_path):
     try:
         with zipfile.ZipFile(epub_path, 'r') as z:
@@ -78,10 +71,15 @@ def count_chapters(epub_path):
 
 @dp.message(Command("start"))
 async def start(message: types.Message):
-    await message.answer("📚 Отправь .epub файл.")
+    if message.chat.type == "private":
+        await message.answer("📚 Отправь .epub файл.")
 
 @dp.message(F.document)
 async def handle_docs(message: types.Message, state: FSMContext):
+    # ЗАЩИТА: работаем только в личке
+    if message.chat.type != "private":
+        return
+        
     if os.path.splitext(message.document.file_name or "")[1].lower() not in ALLOWED_EXTENSIONS:
         return await message.answer("❌ Только .epub")
     
@@ -101,28 +99,20 @@ async def callbacks(call: types.CallbackQuery, state: FSMContext):
     elif call.data == "change_fl": data['fl'] = "DeepSeek" if data['fl'] == "Нет" else "Нет"
     elif call.data == "pub_done":
         meta = data['meta']
-        # 1. Заголовки (гибко)
         icons = ["🏴‍☠️", "🇬🇧", "🌐"]
         post_text = ""
         for i, title in enumerate(meta.get('titles', [])):
             icon = icons[i] if i < len(icons) else "🔹"
             post_text += f"{icon} <b>{escape(title)}</b>\n"
         
-        # 2. Автор и Главы
         chapters = await asyncio.to_thread(count_chapters, data['path'])
         post_text += f"\n✍️ Автор: {escape(meta.get('author', '?'))}"
         post_text += f"\n📊 Глав: {escape(str(chapters))}"
         
-        # 3. Теги
         if meta.get('tags'): post_text += f"\n\n🏷 {' '.join(meta['tags'])}"
-        
-        # 4. Описание
         post_text += f"\n\n📖 <b>Описание:</b>\n<blockquote expandable>{escape(meta.get('desc', 'Описание отсутствует'))}</blockquote>"
-        
-        # 5. Ссылка
         if meta.get('links'): post_text += f"\n\n🔗 {escape(meta['links'][0])}"
         
-        # Инструменты в подпись
         cap = f"🤖 Глоссарий: {escape(data['gl'])}\n🤖 Перевод: {escape(data['tr'])}\n🧹 Фильтр: {escape(data['fl'])}"
         
         await bot.send_message(GROUP_USERNAME, post_text, parse_mode="HTML", link_preview_options=LinkPreviewOptions(is_disabled=True))
