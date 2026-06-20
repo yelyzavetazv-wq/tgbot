@@ -246,13 +246,18 @@ def extract_metadata_from_epub(epub_path):
                             if subject.text:
                                 result["tags"].append(subject.text.strip())
                         
-                        # Ссылки из dc:publisher (разбиваем по пробелам)
+                        # --- ССЫЛКИ ИЗ dc:publisher (с проверкой) ---
                         publisher = soup.find('dc:publisher')
                         if publisher and publisher.text:
+                            print(f"🔍 Найден тег publisher: {publisher.text}")  # <- ПРОВЕРКА
                             links = publisher.text.strip().split()
+                            print(f"🔍 Ссылки после разбивки: {links}")  # <- ПРОВЕРКА
                             for link in links:
                                 if link.startswith('http'):
                                     result["publisher_links"].append(link)
+                            print(f"🔍 Сохранено ссылок: {len(result['publisher_links'])}")  # <- ПРОВЕРКА
+                        else:
+                            print("🔍 Тег publisher не найден или пуст")  # <- ПРОВЕРКА
                         
                     break
     except Exception as e:
