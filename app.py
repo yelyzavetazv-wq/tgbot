@@ -173,24 +173,22 @@ async def callbacks(call: types.CallbackQuery, state: FSMContext):
         data['tr'] = get_next(data['tr'], TR_OPTIONS)
     elif call.data == "change_fl": 
         data['fl'] = get_next(data['fl'], FL_OPTIONS)
-    elif call.data == "cancel_all":
-        # Останавливаем таймер, если он есть
+elif call.data == "cancel_all":
         task = data.get("timer_task")
         if task:
             task.cancel()
-            
-        # Удаляем все файлы
         all_files = [data.get('path'), data.get('cover')] + [i['path'] for i in data.get('extras', [])]
         for p in all_files:
             if p and os.path.exists(p): os.remove(p)
-            
         await state.clear()
         await call.message.edit_text("❌ Операция отменена. Файлы удалены.")
         return
-elif call.data == "pub_done":
+
+    elif call.data == "pub_done":
         # ВЫКЛЮЧАЕМ БУДИЛЬНИК
         task = data.get("timer_task")
-        if task: task.cancel()
+        if task:
+            task.cancel()
         
         try:
             # 1. СОЗДАЕМ ТЕМУ
@@ -209,12 +207,11 @@ elif call.data == "pub_done":
             tr = data.get('tr', TR_OPTIONS[0])
             fl = data.get('fl', FL_OPTIONS[0])
             
-            # (Твой код формирования post_text остается прежним)
             icons = ["🏴‍☠️", "🇬🇧", "🌐"]
             post_text = ""
             for i, title in enumerate(meta.get('titles', [])):
                 icon = icons[i] if i < len(icons) else "🔹"
-                post_text += f"{icon} {escape(title)}\n"
+                post_text += f"{icon} <b>{escape(title)}</b>\n"
             
             chapters = await asyncio.to_thread(count_chapters, data['path'])
             post_text += f"\n✍️ Автор: {escape(meta.get('author', '?'))}\n📊 Глав: {escape(str(chapters))}"
@@ -222,22 +219,28 @@ elif call.data == "pub_done":
             post_text += f"\n\n📖 <b>Описание:</b>\n<blockquote expandable>{escape(meta.get('desc', 'Описание отсутствует'))}</blockquote>"
             if meta.get('links'): post_text += f"\n\n🔗 {escape(meta['links'][0])}"
             
-            # Отправка фото
             if data.get('cover') and os.path.exists(data['cover']):
                 await bot.send_photo(GROUP_USERNAME, photo=FSInputFile(data['cover']), message_thread_id=thread_id)
             
-            # Отправка текста
             await bot.send_message(GROUP_USERNAME, post_text, message_thread_id=thread_id, link_preview_options=LinkPreviewOptions(is_disabled=True))
             
-            # Отправка EPUB
             cap = f"🤖 Глоссарий: {escape(gl)}\n🤖 Перевод: {escape(tr)}\n🧹 Фильтр: {escape(fl)}"
             await bot.send_document(GROUP_USERNAME, document=FSInputFile(data['path'], filename=data['name']), caption=cap, message_thread_id=thread_id)
             
-            # Отправка доп. файлов
             for item in data.get('extras', []):
                 await bot.send_document(GROUP_USERNAME, document=FSInputFile(item['path'], filename=item['name']), message_thread_id=thread_id)
             
             await call.message.edit_text("✅ Опубликовано в тему!")
+            
+        except Exception as e:
+            logging.error(f"Ошибка при публикации: {e}")
+            await call.answer("❌ Ошибка публикации", show_alert=True)
+            return
+        finally:
+            all_files = [data.get('path'), data.get('cover')] + [i['path'] for i in data.get('extras', [])]
+            for p in all_files:
+                if p and os.path.exists(p): os.remove(p)
+            await state.clear()
             return
 
     # ОБНОВЛЕНИЕ ДАННЫХ (если нажали кнопку смены инструмента)
