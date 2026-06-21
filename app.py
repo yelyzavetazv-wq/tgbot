@@ -48,7 +48,8 @@ def get_tools_kb(gl, tr, fl):
         [InlineKeyboardButton(text=f"📖 Глоссарий: {gl}", callback_data="change_gl")],
         [InlineKeyboardButton(text=f"🌐 Перевод: {tr}", callback_data="change_tr")],
         [InlineKeyboardButton(text=f"🧹 Фильтр: {fl}", callback_data="change_fl")],
-        [InlineKeyboardButton(text="✅ ПУБЛИКАЦИЯ", callback_data="pub_done")]
+        [InlineKeyboardButton(text="✅ ПУБЛИКАЦИЯ", callback_data="pub_done")],
+        [InlineKeyboardButton(text="❌ ОТМЕНА", callback_data="cancel_all")]
     ])
 
 # --- ПАРСИНГ ---
@@ -172,7 +173,20 @@ async def callbacks(call: types.CallbackQuery, state: FSMContext):
         data['tr'] = get_next(data['tr'], TR_OPTIONS)
     elif call.data == "change_fl": 
         data['fl'] = get_next(data['fl'], FL_OPTIONS)
-    
+    elif call.data == "cancel_all":
+        # Останавливаем таймер, если он есть
+        task = data.get("timer_task")
+        if task:
+            task.cancel()
+            
+        # Удаляем все файлы
+        all_files = [data.get('path'), data.get('cover')] + [i['path'] for i in data.get('extras', [])]
+        for p in all_files:
+            if p and os.path.exists(p): os.remove(p)
+            
+        await state.clear()
+        await call.message.edit_text("❌ Операция отменена. Файлы удалены.")
+        return
     elif call.data == "pub_done":
         # ВЫКЛЮЧАЕМ БУДИЛЬНИК
         task = data.get("timer_task")
