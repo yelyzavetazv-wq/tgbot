@@ -130,16 +130,25 @@ async def handle_docs(message: types.Message, state: FSMContext):
     data = await state.get_data()
     extras = data.get('extras', [])
     
-    if ext == '.epub' and 'path' not in data:
+    # ЕСЛИ EPUB - сохраняем метаданные и запускаем таймер
+    if ext == '.epub' and not data.get('path'):
         meta = await asyncio.to_thread(extract_metadata, path)
         cover = await asyncio.to_thread(extract_cover, path)
-        await state.update_data(path=path, name=message.document.file_name, meta=meta, cover=cover, extras=extras, gl=GL_OPTIONS[0], tr=TR_OPTIONS[0], fl=FL_OPTIONS[0])
-        await state.set_state(BookForm.choosing_tools)
-        await state.update_data(path=path, name=message.document.file_name, meta=meta, cover=cover, extras=extras)
+        
+        # Сохраняем всё ОДНИМ РАЗОМ
+        await state.update_data(
+            path=path, 
+            name=message.document.file_name, 
+            meta=meta, 
+            cover=cover, 
+            extras=extras, 
+            gl=GL_OPTIONS[0], tr=TR_OPTIONS[0], fl=FL_OPTIONS[0]
+        )
         await state.set_state(BookForm.choosing_tools)
         await message.answer("✅ EPUB принят. Жду 30 сек для доп. файлов...", reply_markup=get_tools_kb(GL_OPTIONS[0], TR_OPTIONS[0], FL_OPTIONS[0]))
         asyncio.create_task(check_and_clear(message, state))
     else:
+        # Если это просто файл или уже есть EPUB - кидаем в extras
         extras.append({"path": path, "name": message.document.file_name})
         await state.update_data(extras=extras)
         await message.answer(f"📎 {message.document.file_name} в очереди.")
