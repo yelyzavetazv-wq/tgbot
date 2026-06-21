@@ -29,7 +29,10 @@ class BookForm(StatesGroup):
     choosing_tools = State()
 
 async def check_and_clear(message: types.Message, state: FSMContext):
-    await asyncio.sleep(30)
+    try:
+        await asyncio.sleep(30)
+    except asyncio.CancelledError:
+        return # Если мы выключили будильник сами, просто уходим и молчим
     data = await state.get_data()
     # Если за 30 сек так и не пришел EPUB (нет ключа 'path')
     if not data.get('path'):
@@ -146,7 +149,8 @@ async def handle_docs(message: types.Message, state: FSMContext):
         )
         await state.set_state(BookForm.choosing_tools)
         await message.answer("✅ EPUB принят. Жду 30 сек для доп. файлов...", reply_markup=get_tools_kb(GL_OPTIONS[0], TR_OPTIONS[0], FL_OPTIONS[0]))
-        asyncio.create_task(check_and_clear(message, state))
+        task = asyncio.create_task(check_and_clear(message, state))
+        await state.update_data(timer_task=task) # Кладем ID будильника в «карман» (состояние)    
     else:
         # Если это просто файл или уже есть EPUB - кидаем в extras
         extras.append({"path": path, "name": message.document.file_name})
@@ -170,6 +174,10 @@ async def callbacks(call: types.CallbackQuery, state: FSMContext):
         data['fl'] = get_next(data['fl'], FL_OPTIONS)
     
     elif call.data == "pub_done":
+        # ВЫКЛЮЧАЕМ БУДИЛЬНИК
+        task = data.get("timer_task")
+        if task:
+            task.cancel()
         try:
             # Используем .get() с дефолтными значениями, чтобы не было ошибки
             gl = data.get('gl', GL_OPTIONS[0])
