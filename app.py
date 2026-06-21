@@ -173,7 +173,7 @@ async def callbacks(call: types.CallbackQuery, state: FSMContext):
         data['tr'] = get_next(data['tr'], TR_OPTIONS)
     elif call.data == "change_fl": 
         data['fl'] = get_next(data['fl'], FL_OPTIONS)
-elif call.data == "cancel_all":
+    elif call.data == "cancel_all":
         task = data.get("timer_task")
         if task:
             task.cancel()
