@@ -18,9 +18,11 @@ TOKEN = os.getenv("BOT_TOKEN")
 GROUP_USERNAME = os.getenv("GROUP_USERNAME")
 ALLOWED_EXTENSIONS = {'.epub', '.pdf', '.txt', '.docx', '.doc', '.fb2', '.mobi'}
 TEMP_DIR = tempfile.gettempdir()
+# Списки опций
 GL_OPTIONS = ["Gemini 3.0", "Gemini 3.1", "Gemini 3.5"]
 TR_OPTIONS = ["Gemini 3.0", "Gemini 3.1", "Gemini 3.5"]
 FL_OPTIONS = ["ChatGpt", "DeepSeek", "Нет"]
+STATUS_OPTIONS = ["В процессе", "Фулл", "Брошен"]
 
 bot = Bot(token=TOKEN, default=DefaultBotProperties(parse_mode="HTML"))
 dp = Dispatcher(storage=MemoryStorage())
@@ -43,11 +45,12 @@ async def check_and_clear(message: types.Message, state: FSMContext):
         await message.answer("❌ Время вышло, EPUB не получен. Все файлы удалены.")
 
 # --- ИНСТРУМЕНТЫ И КНОПКИ ---
-def get_tools_kb(gl, tr, fl):
+def get_tools_kb(data):
     return InlineKeyboardMarkup(inline_keyboard=[
-        [InlineKeyboardButton(text=f"📖 Глоссарий: {gl}", callback_data="change_gl")],
-        [InlineKeyboardButton(text=f"🌐 Перевод: {tr}", callback_data="change_tr")],
-        [InlineKeyboardButton(text=f"🧹 Фильтр: {fl}", callback_data="change_fl")],
+        [InlineKeyboardButton(text=f"📖 Глоссарий: {data['gl']}", callback_data="change_gl")],
+        [InlineKeyboardButton(text=f"🌐 Перевод: {data['tr']}", callback_data="change_tr")],
+        [InlineKeyboardButton(text=f"🧹 Фильтр: {data['fl']}", callback_data="change_fl")],
+        [InlineKeyboardButton(text=f"📌 Статус: {data['status']}", callback_data="change_status")],
         [InlineKeyboardButton(text="✅ ПУБЛИКАЦИЯ", callback_data="pub_done")],
         [InlineKeyboardButton(text="❌ ОТМЕНА", callback_data="cancel_all")]
     ])
@@ -146,10 +149,11 @@ async def handle_docs(message: types.Message, state: FSMContext):
             meta=meta, 
             cover=cover, 
             extras=extras, 
-            gl=GL_OPTIONS[0], tr=TR_OPTIONS[0], fl=FL_OPTIONS[0]
+            gl=GL_OPTIONS[0], tr=TR_OPTIONS[0], fl=FL_OPTIONS[0], status=STATUS_OPTIONS[0]
         )
         await state.set_state(BookForm.choosing_tools)
-        await message.answer("✅ EPUB принят. Жду 30 сек для доп. файлов...", reply_markup=get_tools_kb(GL_OPTIONS[0], TR_OPTIONS[0], FL_OPTIONS[0]))
+        new_data = await state.get_data()
+        await message.answer("✅ EPUB принят. Жду доп. файлы...", reply_markup=get_tools_kb(new_data))
         task = asyncio.create_task(check_and_clear(message, state))
         await state.update_data(timer_task=task) # Кладем ID будильника в «карман» (состояние)    
     else:
@@ -163,25 +167,20 @@ async def callbacks(call: types.CallbackQuery, state: FSMContext):
     data = await state.get_data()
     
     def get_next(current, options):
-        # Если текущего нет в списке (например, при первом запуске), берем 0
-        if current not in options: return options[0]
         return options[(options.index(current) + 1) % len(options)]
 
-    if call.data == "change_gl": 
-        data['gl'] = get_next(data['gl'], GL_OPTIONS)
-    elif call.data == "change_tr": 
-        data['tr'] = get_next(data['tr'], TR_OPTIONS)
-    elif call.data == "change_fl": 
-        data['fl'] = get_next(data['fl'], FL_OPTIONS)
+    if call.data == "change_gl": data['gl'] = get_next(data['gl'], GL_OPTIONS)
+    elif call.data == "change_tr": data['tr'] = get_next(data['tr'], TR_OPTIONS)
+    elif call.data == "change_fl": data['fl'] = get_next(data['fl'], FL_OPTIONS)
+    elif call.data == "change_status": data['status'] = get_next(data['status'], STATUS_OPTIONS)
+    
     elif call.data == "cancel_all":
         task = data.get("timer_task")
-        if task:
-            task.cancel()
-        all_files = [data.get('path'), data.get('cover')] + [i['path'] for i in data.get('extras', [])]
-        for p in all_files:
+        if task: task.cancel()
+        for p in [data.get('path'), data.get('cover')] + [i['path'] for i in data.get('extras', [])]:
             if p and os.path.exists(p): os.remove(p)
         await state.clear()
-        await call.message.edit_text("❌ Операция отменена. Файлы удалены.")
+        await call.message.edit_text("❌ Отменено.")
         return
 
     elif call.data == "pub_done":
@@ -245,7 +244,7 @@ async def callbacks(call: types.CallbackQuery, state: FSMContext):
 
     # ОБНОВЛЕНИЕ ДАННЫХ (если нажали кнопку смены инструмента)
     await state.update_data(data)
-    await call.message.edit_reply_markup(reply_markup=get_tools_kb(data['gl'], data['tr'], data['fl']))
+    await call.message.edit_reply_markup(reply_markup=get_tools_kb(data))
     await call.answer()
 
 if __name__ == "__main__":
