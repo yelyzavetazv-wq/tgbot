@@ -149,7 +149,7 @@ async def handle_docs(message: types.Message, state: FSMContext):
             meta=meta, 
             cover=cover, 
             extras=extras, 
-            gl=GL_OPTIONS[0], tr=TR_OPTIONS[0], fl=FL_OPTIONS[0], status=STATUS_OPTIONS[0]
+            gl=GL_OPTIONS[0], tr=TR_OPTIONS[2], fl=FL_OPTIONS[2], status=STATUS_OPTIONS[0]
         )
         await state.set_state(BookForm.choosing_tools)
         new_data = await state.get_data()
@@ -213,8 +213,11 @@ async def callbacks(call: types.CallbackQuery, state: FSMContext):
                 post_text += f"{icon} {escape(title)}\n"
             
             chapters = await asyncio.to_thread(count_chapters, data['path'])
-            post_text += f"\n✍️ Автор: {escape(meta.get('author', '?'))}\n📊 Глав: {escape(str(chapters))}"
+            status = data.get('status', "В процессе")
+           
+            post_text += f"\n✍️ Автор: {escape(meta.get('author', '?'))}\n📊 Глав: {escape(str(chapters))}\n📌 Статус: <b>{escape(status)}</b>"
             if meta.get('tags'): post_text += f"\n\n🏷 {' '.join(meta['tags'])}"
+         
             post_text += f"\n\n📖 <b>Описание:</b>\n<blockquote expandable>{escape(meta.get('desc', 'Описание отсутствует'))}</blockquote>"
             if meta.get('links'): post_text += f"\n\n🔗 {escape(meta['links'][0])}"
             
