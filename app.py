@@ -89,7 +89,7 @@ def extract_metadata(epub_path):
                         if t and t.text: meta["titles"] = [p.strip() for p in t.text.split('/') if p.strip()]
                         c = soup.find('dc:creator')
                         if c and c.text.strip(): meta["author"] = c.text.strip()
-                        meta["tags"] = [f"#{re.sub(r'[^a-zA-Zа-яА-Я0-9]', '', tag.text.strip())}" for tag in soup.find_all('dc:subject')]
+                        meta["tags"] = [f"#{re.sub(r'[^a-zA-Zа-яА-Я0-9]+', '_', tag.text.strip()).strip('_')}" for tag in soup.find_all('dc:subject')]
                         d = soup.find('dc:description')
                         if d and d.text:
                             inner = BeautifulSoup(d.text, 'html.parser')
@@ -211,7 +211,7 @@ async def callbacks(call: types.CallbackQuery, state: FSMContext):
             post_text = ""
             for i, title in enumerate(meta.get('titles', [])):
                 icon = icons[i] if i < len(icons) else "🔹"
-                post_text += f"{icon} <b>{escape(title)}</b>\n"
+                post_text += f"{icon} {escape(title)}\n"
             
             chapters = await asyncio.to_thread(count_chapters, data['path'])
             post_text += f"\n✍️ Автор: {escape(meta.get('author', '?'))}\n📊 Глав: {escape(str(chapters))}"
