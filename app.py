@@ -106,13 +106,27 @@ def extract_metadata(epub_path):
 def count_chapters(epub_path):
     try:
         with zipfile.ZipFile(epub_path, 'r') as z:
+            # Ищем файл .ncx
             for name in z.namelist():
                 if name.endswith('.ncx'):
                     with z.open(name) as f:
                         soup = BeautifulSoup(f.read(), 'xml')
+                        # Ищем все точки навигации
                         nav_points = soup.find_all('navPoint')
-                        return len(nav_points) if nav_points else "?"
-    except: pass
+                        if nav_points:
+                            # Берем самый последний navPoint
+                            last_point = nav_points[-1]
+                            # Пытаемся найти текст внутри него (название главы)
+                            text = last_point.find('text').get_text()
+                            
+                            # Пытаемся вытащить число из названия (например, "Глава 161")
+                            numbers = re.findall(r'\d+', text)
+                            if numbers:
+                                return numbers[-1] # Возвращаем последнее найденное число
+                            else:
+                                return len(nav_points) # Если чисел нет, вернем просто количество
+    except Exception as e:
+        logging.error(f"Ошибка подсчета: {e}")
     return "?"
 
 # --- ХЕНДЛЕРЫ ---
@@ -188,6 +202,7 @@ async def callbacks(call: types.CallbackQuery, state: FSMContext):
         task = data.get("timer_task")
         if task:
             task.cancel()
+        await call.message.edit_text("⏳ Публикация началась... подожди немного.")
         
         try:
             # 1. СОЗДАЕМ ТЕМУ
