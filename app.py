@@ -32,17 +32,24 @@ class BookForm(StatesGroup):
 
 async def check_and_clear(message: types.Message, state: FSMContext):
     try:
-        await asyncio.sleep(30)
+        await asyncio.sleep(30) # Ждем 30 секунд
     except asyncio.CancelledError:
-        return # Если мы выключили будильник сами, просто уходим и молчим
+        # Задача была отменена (пользователь нажал "ПУБЛИКАЦИЯ" или "ОТМЕНА")
+        return 
+
+    # Если дошли сюда, значит время вышло
     data = await state.get_data()
-    # Если за 30 сек так и не пришел EPUB (нет ключа 'path')
-    if not data.get('path'):
-        files_to_remove = [i['path'] for i in data.get('extras', [])]
-        for p in files_to_remove:
-            if p and os.path.exists(p): os.remove(p)
-        await state.clear()
-        await message.answer("❌ Время вышло, EPUB не получен. Все файлы удалены.")
+    # Удаляем файлы
+    files_to_remove = [data.get('path'), data.get('cover')] + [i['path'] for i in data.get('extras', [])]
+    for p in files_to_remove:
+        if p and os.path.exists(p): 
+            try:
+                os.remove(p)
+            except Exception as e:
+                logging.error(f"Ошибка удаления файла {p}: {e}")
+                
+    await state.clear()
+    await message.answer("❌ Время вышло, EPUB не получен. Все файлы удалены.")
 
 # --- ИНСТРУМЕНТЫ И КНОПКИ ---
 def get_tools_kb(data):
@@ -151,27 +158,37 @@ async def handle_docs(message: types.Message, state: FSMContext):
     data = await state.get_data()
     extras = data.get('extras', [])
     
-    # ЕСЛИ EPUB - сохраняем метаданные и запускаем таймер
+    # ЕСЛИ EPUB (начало процесса)
     if ext == '.epub' and not data.get('path'):
+        # 1. Отменяем старый таймер, если он был
+        old_task = data.get('timer_task')
+        if old_task and not old_task.done():
+            old_task.cancel()
+
+        # 2. Парсим
         meta = await asyncio.to_thread(extract_metadata, path)
         cover = await asyncio.to_thread(extract_cover, path)
         
-        # Сохраняем всё ОДНИМ РАЗОМ
+        # 3. Создаем новый таймер
+        new_task = asyncio.create_task(check_and_clear(message, state))
+        
+        # 4. Сохраняем всё ОДНИМ РАЗОМ
         await state.update_data(
             path=path, 
             name=message.document.file_name, 
             meta=meta, 
             cover=cover, 
             extras=extras, 
+            timer_task=new_task, # Сохраняем ID задачи
             gl=GL_OPTIONS[0], tr=TR_OPTIONS[2], fl=FL_OPTIONS[2], status=STATUS_OPTIONS[0]
         )
         await state.set_state(BookForm.choosing_tools)
+        
         new_data = await state.get_data()
         await message.answer("✅ EPUB принят. Жду доп. файлы...", reply_markup=get_tools_kb(new_data))
-        task = asyncio.create_task(check_and_clear(message, state))
-        await state.update_data(timer_task=task) # Кладем ID будильника в «карман» (состояние)    
+        
     else:
-        # Если это просто файл или уже есть EPUB - кидаем в extras
+        # Если это просто доп. файл
         extras.append({"path": path, "name": message.document.file_name})
         await state.update_data(extras=extras)
         await message.answer(f"📎 {message.document.file_name} в очереди.")
