@@ -15,7 +15,10 @@ load_dotenv()
 logging.basicConfig(level=logging.INFO)
 
 TOKEN = os.getenv("BOT_TOKEN")
-GROUP_USERNAME = os.getenv("GROUP_USERNAME")
+# Было: GROUP_USERNAME = os.getenv("GROUP_USERNAME")
+# Стало:
+GROUP_ID_1 = os.getenv("GROUP_ID_1")
+GROUP_ID_2 = os.getenv("GROUP_ID_2")
 ALLOWED_EXTENSIONS = {'.epub', '.pdf', '.txt', '.docx', '.doc', '.fb2', '.mobi'}
 TEMP_DIR = tempfile.gettempdir()
 # Списки опций
@@ -142,6 +145,20 @@ async def start(message: types.Message):
     if message.chat.type == "private": await message.answer("📚 Отправь .epub файл.")
 
 @dp.message(F.document)
+
+async def publish_to_group(group_id, data, post_text, gl, tr, fl):
+    meta = data['meta']
+    title_topic = meta.get('titles', ['Новая книга'])[0][:128]
+    forum_topic = await bot.create_forum_topic(chat_id=group_id, name=title_topic, icon_color=random.choice([0x6FB9F0, 0xFFD67E, 0xCB86DB, 0x8EEE98, 0xFF93B2, 0xFB6F5F]))
+    thread_id = forum_topic.message_thread_id
+    if data.get('cover') and os.path.exists(data['cover']):
+        await bot.send_photo(group_id, photo=FSInputFile(data['cover']), message_thread_id=thread_id)
+    await bot.send_message(group_id, post_text, message_thread_id=thread_id, link_preview_options=LinkPreviewOptions(is_disabled=True))
+    cap = f"🤖 Глоссарий: {escape(gl)}\n🤖 Перевод: {escape(tr)}\n🧹 Фильтр: {escape(fl)}"
+    await bot.send_document(group_id, document=FSInputFile(data['path'], filename=data['name']), caption=cap, message_thread_id=thread_id)
+    for item in data.get('extras', []):
+        await bot.send_document(group_id, document=FSInputFile(item['path'], filename=item['name']), message_thread_id=thread_id)
+
 async def handle_docs(message: types.Message, state: FSMContext):
     if message.chat.type != "private": return
     
@@ -215,25 +232,14 @@ async def callbacks(call: types.CallbackQuery, state: FSMContext):
         return
 
     elif call.data == "pub_done":
-        # ВЫКЛЮЧАЕМ БУДИЛЬНИК
+        # 1. ВЫКЛЮЧАЕМ БУДИЛЬНИК
         task = data.get("timer_task")
-        if task:
-            task.cancel()
+        if task: task.cancel()
         await call.message.edit_text("⏳ Публикация началась... подожди немного.")
         
         try:
-            # 1. СОЗДАЕМ ТЕМУ
+            # 2. СНАЧАЛА ГОТОВИМ ВСЕ ДАННЫЕ (как ты и хотел)
             meta = data['meta']
-            title_topic = meta.get('titles', ['Новая книга'])[0][:128]
-            
-            forum_topic = await bot.create_forum_topic(
-                chat_id=GROUP_USERNAME,
-                name=title_topic,
-                icon_color=random.choice([0x6FB9F0, 0xFFD67E, 0xCB86DB, 0x8EEE98, 0xFF93B2, 0xFB6F5F])
-            )
-            thread_id = forum_topic.message_thread_id
-
-            # 2. ПУБЛИКАЦИЯ В ТЕМУ
             gl = data.get('gl', GL_OPTIONS[0])
             tr = data.get('tr', TR_OPTIONS[0])
             fl = data.get('fl', FL_OPTIONS[0])
@@ -246,31 +252,24 @@ async def callbacks(call: types.CallbackQuery, state: FSMContext):
             
             chapters = await asyncio.to_thread(count_chapters, data['path'])
             status = data.get('status', "В процессе")
-           
+            
             post_text += f"\n✍️ Автор: {escape(meta.get('author', '?'))}\n📊 Глав: {escape(str(chapters))}\n📌 Статус: <b>{escape(status)}</b>"
             if meta.get('tags'): post_text += f"\n\n🏷 {' '.join(meta['tags'])}"
-         
             post_text += f"\n\n📖 <b>Описание:</b>\n<blockquote expandable>{escape(meta.get('desc', 'Описание отсутствует'))}</blockquote>"
             if meta.get('links'): post_text += f"\n\n🔗 {escape(meta['links'][0])}"
             
-            if data.get('cover') and os.path.exists(data['cover']):
-                await bot.send_photo(GROUP_USERNAME, photo=FSInputFile(data['cover']), message_thread_id=thread_id)
+            # 3. А ТЕПЕРЬ ОДИН РАЗ ОТПРАВЛЯЕМ В ОБА КАНАЛА
+            for gid in [GROUP_ID_1, GROUP_ID_2]:
+                await publish_to_group(gid, data, post_text, gl, tr, fl)
             
-            await bot.send_message(GROUP_USERNAME, post_text, message_thread_id=thread_id, link_preview_options=LinkPreviewOptions(is_disabled=True))
-            
-            cap = f"🤖 Глоссарий: {escape(gl)}\n🤖 Перевод: {escape(tr)}\n🧹 Фильтр: {escape(fl)}"
-            await bot.send_document(GROUP_USERNAME, document=FSInputFile(data['path'], filename=data['name']), caption=cap, message_thread_id=thread_id)
-            
-            for item in data.get('extras', []):
-                await bot.send_document(GROUP_USERNAME, document=FSInputFile(item['path'], filename=item['name']), message_thread_id=thread_id)
-            
-            await call.message.edit_text("✅ Опубликовано в тему!")
+            await call.message.edit_text("✅ Опубликовано в оба канала!")
             
         except Exception as e:
-            logging.error(f"Ошибка при публикации: {e}")
+            logging.error(f"Ошибка публикации: {e}")
             await call.answer("❌ Ошибка публикации", show_alert=True)
             return
         finally:
+            # Твой старый код удаления файлов
             all_files = [data.get('path'), data.get('cover')] + [i['path'] for i in data.get('extras', [])]
             for p in all_files:
                 if p and os.path.exists(p): os.remove(p)
