@@ -19,8 +19,8 @@ GROUP_USERNAME = os.getenv("GROUP_USERNAME")
 ALLOWED_EXTENSIONS = {'.epub', '.pdf', '.txt', '.docx', '.doc', '.fb2', '.mobi'}
 TEMP_DIR = tempfile.gettempdir()
 # Списки опций
-GL_OPTIONS = ["Gemini 3.0", "Gemini 3.1", "Gemini 3.5", DeepSeek V4 Flash]
-TR_OPTIONS = ["Gemini 3.0", "Gemini 3.1", "Gemini 3.5", DeepSeek V4 Flash]
+GL_OPTIONS = ["Gemini 3.0", "Gemini 3.1", "Gemini 3.5", "DeepSeek V4 Flash"]
+TR_OPTIONS = ["Gemini 3.0", "Gemini 3.1", "Gemini 3.5", "DeepSeek V4 Flash"]
 FL_OPTIONS = ["ChatGpt", "DeepSeek", "Нет"]
 STATUS_OPTIONS = ["В процессе", "Фулл", "Брошен"]
 
@@ -222,49 +222,48 @@ async def callbacks(call: types.CallbackQuery, state: FSMContext):
         await call.message.edit_text("⏳ Публикация началась... подожди немного.")
         
         try:
-            # 1. СОЗДАЕМ ТЕМУ
+            # 1. СОЗДАЕМ ТЕМЫ
             meta = data['meta']
             title_topic = meta.get('titles', ['Новая книга'])[0][:128]
             
-            forum_topic = await bot.create_forum_topic(
-                chat_id=GROUP_USERNAME,
-                name=title_topic,
-                icon_color=random.choice([0x6FB9F0, 0xFFD67E, 0xCB86DB, 0x8EEE98, 0xFF93B2, 0xFB6F5F])
-            )
-            thread_id = forum_topic.message_thread_id
+            for gid in [GROUP_USERNAME, os.getenv("GROUP_USERNAME_2")]:
+                if not gid: continue
+                topic = await bot.create_forum_topic(chat_id=gid, name=title_topic, icon_color=random.choice([0x6FB9F0, 0xFFD67E, 0xCB86DB, 0x8EEE98, 0xFF93B2, 0xFB6F5F]))
+                thread_id = topic.message_thread_id
 
-            # 2. ПУБЛИКАЦИЯ В ТЕМУ
-            gl = data.get('gl', GL_OPTIONS[0])
-            tr = data.get('tr', TR_OPTIONS[0])
-            fl = data.get('fl', FL_OPTIONS[0])
-            
-            icons = ["🏴‍☠️", "🇬🇧", "🌐"]
-            post_text = ""
-            for i, title in enumerate(meta.get('titles', [])):
-                icon = icons[i] if i < len(icons) else "🔹"
-                post_text += f"{icon} {escape(title)}\n"
-            
-            chapters = await asyncio.to_thread(count_chapters, data['path'])
-            status = data.get('status', "В процессе")
-           
-            post_text += f"\n✍️ Автор: {escape(meta.get('author', '?'))}\n📊 Глав: {escape(str(chapters))}\n📌 Статус: <b>{escape(status)}</b>"
-            if meta.get('tags'): post_text += f"\n\n🏷 {' '.join(meta['tags'])}"
-         
-            post_text += f"\n\n📖 <b>Описание:</b>\n<blockquote expandable>{escape(meta.get('desc', 'Описание отсутствует'))}</blockquote>"
-            if meta.get('links'): post_text += f"\n\n🔗 {escape(meta['links'][0])}"
-            
-            if data.get('cover') and os.path.exists(data['cover']):
-                await bot.send_photo(GROUP_USERNAME, photo=FSInputFile(data['cover']), message_thread_id=thread_id)
-            
-            await bot.send_message(GROUP_USERNAME, post_text, message_thread_id=thread_id, link_preview_options=LinkPreviewOptions(is_disabled=True))
-            
-            cap = f"🤖 Глоссарий: {escape(gl)}\n🤖 Перевод: {escape(tr)}\n🧹 Фильтр: {escape(fl)}"
-            await bot.send_document(GROUP_USERNAME, document=FSInputFile(data['path'], filename=data['name']), caption=cap, message_thread_id=thread_id)
-            
-            for item in data.get('extras', []):
-                await bot.send_document(GROUP_USERNAME, document=FSInputFile(item['path'], filename=item['name']), message_thread_id=thread_id)
-            
-            await call.message.edit_text("✅ Опубликовано в тему!")
+                # 2. ПУБЛИКАЦИЯ В ТЕМУ
+                gl = data.get('gl', GL_OPTIONS[0])
+                tr = data.get('tr', TR_OPTIONS[0])
+                fl = data.get('fl', FL_OPTIONS[0])
+                
+                icons = ["🏴‍☠️", "🇬🇧", "🌐"]
+                post_text = ""
+                for i, title in enumerate(meta.get('titles', [])):
+                    icon = icons[i] if i < len(icons) else "🔹"
+                    post_text += f"{icon} {escape(title)}\n"
+                
+                chapters = await asyncio.to_thread(count_chapters, data['path'])
+                status = data.get('status', "В процессе")
+               
+                post_text += f"\n✍️ Автор: {escape(meta.get('author', '?'))}\n📊 Глав: {escape(str(chapters))}\n📌 Статус: <b>{escape(status)}</b>"
+                if meta.get('tags'): post_text += f"\n\n🏷 {' '.join(meta['tags'])}"
+             
+                post_text += f"\n\n📖 <b>Описание:</b>\n<blockquote expandable>{escape(meta.get('desc', 'Описание отсутствует'))}</blockquote>"
+                if meta.get('links'): post_text += f"\n\n🔗 {escape(meta['links'][0])}"
+                
+                if data.get('cover') and os.path.exists(data['cover']):
+                    await bot.send_photo(gid, photo=FSInputFile(data['cover']), message_thread_id=thread_id)
+                
+                await bot.send_message(gid, post_text, message_thread_id=thread_id, link_preview_options=LinkPreviewOptions(is_disabled=True))
+                
+                cap = f"🤖 Глоссарий: {escape(gl)}\n🤖 Перевод: {escape(tr)}\n🧹 Фильтр: {escape(fl)}"
+                
+                await bot.send_document(gid, document=FSInputFile(data['path'], filename=data['name']), caption=cap, message_thread_id=thread_id)
+                
+                for item in data.get('extras', []):
+                    await bot.send_document(gid, document=FSInputFile(item['path'], filename=item['name']), message_thread_id=thread_id)
+                
+            await call.message.edit_text("✅ Опубликовано в обе темы!")
             
         except Exception as e:
             logging.error(f"Ошибка при публикации: {e}")
