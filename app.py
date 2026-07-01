@@ -100,10 +100,28 @@ def extract_metadata(epub_path):
                         c = soup.find('dc:creator')
                         if c and c.text.strip(): meta["author"] = c.text.strip()
                         meta["tags"] = [f"#{re.sub(r'[^a-zA-Zа-яА-Я0-9]+', '_', tag.text.strip()).strip('_')}" for tag in soup.find_all('dc:subject')]
+                        
                         d = soup.find('dc:description')
-                        if d and d.text:
-                            inner = BeautifulSoup(d.text, 'html.parser')
-                            meta["desc"] = "\n".join([p.get_text(strip=True) for p in inner.find_all('p') if p.get_text(strip=True)])
+                        if d:
+                            # 1. Берем содержимое тега как строку
+                            raw_html = str(d)
+                            # 2. Создаем ВТОРОЙ, временный суп, который парсит именно HTML
+                            html_soup = BeautifulSoup(raw_html, 'html.parser')
+                            # 3. Вытаскиваем текст из него
+                            meta["desc"] = html_soup.get_text(separator='\n', strip=True)
+                        else:
+                            meta["desc"] = "Описание отсутствует"
+
+
+                        #=========================================
+                        #d = soup.find('dc:description')
+                        #if d and d.text:
+                            #inner = BeautifulSoup(d.text, 'html.parser')
+                            #meta["desc"] = "\n".join([p.get_text(strip=True) for p in inner.find_all('p') if p.get_text(strip=True)])
+                       #============================================ 
+                        
+                        
+                        
                         p = soup.find('dc:publisher')
                         if p and p.text: meta["links"] = [l for l in p.text.split() if l.startswith('http')]
                     break
