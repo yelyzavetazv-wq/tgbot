@@ -103,12 +103,14 @@ def extract_metadata(epub_path):
                         
                         d = soup.find('dc:description')
                         if d:
-                            # 1. Берем содержимое тега как строку
-                            raw_html = str(d)
-                            # 2. Создаем ВТОРОЙ, временный суп, который парсит именно HTML
-                            html_soup = BeautifulSoup(raw_html, 'html.parser')
-                            # 3. Вытаскиваем текст из него
-                            meta["desc"] = html_soup.get_text(separator='\n', strip=True)
+                            # 1. Берем сырое содержимое тега как строку
+                            raw_content = str(d)
+                            # 2. Парсим его как HTML (он поймет и <p>, и <div>, и просто текст)
+                            html_soup = BeautifulSoup(raw_content, 'html.parser')
+                            # 3. Получаем текст, превращая все теги-разделители в переносы строк
+                            text = html_soup.get_text(separator='\n', strip=True)
+                            
+                            meta["desc"] = text if text else "Описание отсутствует"
                         else:
                             meta["desc"] = "Описание отсутствует"
 
