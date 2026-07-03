@@ -1,5 +1,5 @@
 import os, uuid, zipfile, re, asyncio, tempfile, logging, random
-from html import escape
+from html import escape, unescape
 from bs4 import BeautifulSoup
 from dotenv import load_dotenv
 from aiohttp import web
@@ -103,17 +103,20 @@ def extract_metadata(epub_path):
                         
                         d = soup.find('dc:description')
                         if d:
-                            # 1. Берем сырое содержимое тега как строку
-                            raw_content = str(d)
-                            # 2. Парсим его как HTML (он поймет и <p>, и <div>, и просто текст)
-                            html_soup = BeautifulSoup(raw_content, 'html.parser')
-                            # 3. Получаем текст, превращая все теги-разделители в переносы строк
-                            text = html_soup.get_text(separator='\n', strip=True)
-                            
-                            meta["desc"] = text if text else "Описание отсутствует"
+                            # 1. Получаем содержимое тега как строку
+                            raw_desc = str(d)
+                            # 2. Очищаем от XML-тегов самого описания вручную
+                            text = raw_desc.replace('<dc:description>', '').replace('</dc:description>', '')
+                            # 3. Раскодируем HTML-сущности (&lt; в <, &gt; в >)
+                            from html import unescape
+                            text = unescape(text)
+                            # 4. Убираем HTML-теги, которые остались после раскодировки (<div>, <p> и т.д.)
+                            # Мы используем регулярку для удаления любого текста в <...>
+                            clean_text = re.sub(r'<[^>]+>', '\n', text)
+                            # 5. Чистим от лишних пустых строк
+                            meta["desc"] = "\n".join([line.strip() for line in clean_text.splitlines() if line.strip()])
                         else:
                             meta["desc"] = "Описание отсутствует"
-
 
                         #=========================================
                         #d = soup.find('dc:description')
