@@ -99,27 +99,29 @@ class GoogleSheetsDB:
         return bool(user and user.get('is_active'))
 
     async def update_user_groups(self, user_id: int, username: str, groups: list, is_active: bool = True):
-        """Добавляет или обновляет пользователя, сохраняя его права администратора."""
+        """Добавляет или обновляет пользователя, надежно сохраняя его права и статус."""
         await self._ensure_cache()
         groups_str = ", ".join(groups)
         
-        # Сохраняем статус админа, если юзер уже есть в базе
+        # Защита от саморазбана: если юзер есть в базе, берем его текущие статусы
         user = self._cache.get(user_id)
-        is_admin = user['is_admin'] if user else False
+        if user:
+            is_admin = user.get('is_admin', False)
+            # Игнорируем переданный is_active=True, если пользователь забанен
+            is_active = user.get('is_active', is_active)
+        else:
+            is_admin = False
         
         row_data = [str(user_id), username, groups_str, str(is_active).upper(), str(is_admin).upper()]
         
         try:
-            # Нативный асинхронный поиск
             cell = await self.sheet.find(str(user_id))
             if cell:
-                # Обновляем диапазон A:E
                 range_name = f"A{cell.row}:E{cell.row}"
                 await self.sheet.update(range_name, [row_data])
             else:
                 await self.sheet.append_row(row_data)
                 
-            # Обновляем локальный кэш "на лету" без полного перезапроса таблицы
             self._cache[user_id] = {
                 'username': username,
                 'groups': groups,
@@ -128,6 +130,18 @@ class GoogleSheetsDB:
             }
         except Exception as e:
             logging.error(f"Ошибка записи пользователя {user_id} в БД: {e}")
+
+    async def get_all_admins(self) -> list:
+        """Возвращает список @username всех администраторов (O(N) по кэшу)."""
+        await self._ensure_cache()
+        admins = []
+        for data in self._cache.values():
+            if data.get('is_admin'):
+                username = data.get('username', '').strip()
+                # Берем только тех, у кого есть валидный @username
+                if username.startswith('@') and len(username) > 1:
+                    admins.append(username)
+        return admins
 
     async def find_user_by_identifier(self, identifier: str):
         """Ищет пользователя по числовому ID или @username (Сложность O(N) по кэшу)."""
