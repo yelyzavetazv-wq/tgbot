@@ -172,6 +172,27 @@ async def start(message: types.Message):
         
         await message.answer("📚 Отправь .epub файл.")
 
+#проверка бд в гугле
+@dp.message(Command("test_db"))
+async def test_db_connection(message: types.Message):
+    # Пытаемся получить данные текущего пользователя из Google Таблицы
+    user_data = await db.get_user(message.from_user.id)
+    
+    if user_data:
+        response = (
+            f"✅ <b>Соединение с БД работает!</b>\n\n"
+            f"🆔 Ваш ID: <code>{message.from_user.id}</code>\n"
+            f"👤 Username в БД: {user_data.get('username')}\n"
+            f"📂 Группы: {', '.join(user_data.get('groups', []))}\n"
+            f"🟢 Статус: {'Активен' if user_data.get('is_active') else 'Отключен'}\n"
+            f"🔢 Строка в таблице: {user_data.get('row_index')}"
+        )
+    else:
+        response = f"❌ <b>Соединение работает</b>, но вашего ID (<code>{message.from_user.id}</code>) нет в таблице."
+        
+    await message.answer(response)
+
+
 @dp.message(F.document)
 async def handle_docs(message: types.Message, state: FSMContext):
     if message.chat.type != "private": return
