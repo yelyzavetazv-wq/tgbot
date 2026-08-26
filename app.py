@@ -67,7 +67,7 @@ DEFAULT_PRESETS = {
 # 3. ВСПОМОГАТЕЛЬНЫЕ ФУНКЦИИ UI
 # ==========================================
 def get_presets_keyboard(user_prefs: dict) -> InlineKeyboardMarkup:
-    """Генерирует клавиатуру с чекбоксами для всех категорий настроек."""
+    """Генерирует компактную клавиатуру с сеткой по 2 кнопки в ряд для категорий настроек."""
     builder = InlineKeyboardBuilder()
     
     categories = {
@@ -77,19 +77,28 @@ def get_presets_keyboard(user_prefs: dict) -> InlineKeyboardMarkup:
     }
     
     for cat_key, cat_name in categories.items():
+        # Заголовок категории на всю ширину
         builder.row(InlineKeyboardButton(text=f"--- {cat_name} ---", callback_data="ignore"))
         
         # Объединяем базовые пресеты с кастомными (без дубликатов)
         user_custom_items = user_prefs.get(cat_key, [])
         all_options = list(dict.fromkeys(DEFAULT_PRESETS[cat_key] + user_custom_items))
         
+        # Временный массив для кнопок текущей категории, чтобы выстроить их по 2 в ряд
+        category_buttons = []
         for item in all_options:
             mark = "✅" if item in user_prefs.get(cat_key, []) else "❌"
-            builder.row(InlineKeyboardButton(text=f"{mark} {item}", callback_data=f"toggle_{cat_key}_{item}"))
+            category_buttons.append(InlineKeyboardButton(text=f"{mark} {item}", callback_data=f"toggle_{cat_key}_{item}"))
+        
+        # Добавляем кнопки опций парами (по 2 в ряд)
+        builder.row(*category_buttons, width=2)
             
+        # Кнопка добавления своего идет на всю ширину
         builder.row(InlineKeyboardButton(text="➕ Добавить свое", callback_data=f"add_custom_{cat_key}"))
 
+    # Управляющие кнопки внизу
     builder.row(InlineKeyboardButton(text="💾 СОХРАНИТЬ И ЗАВЕРШИТЬ", callback_data="finish_presets"))
+    builder.row(InlineKeyboardButton(text="👤 Стать обычным пользователем", callback_data="demote_to_publisher"))
     return builder.as_markup()
 
 def get_tools_kb(data: dict, is_translator: bool) -> InlineKeyboardMarkup:
@@ -297,6 +306,17 @@ async def process_role_publisher(call: types.CallbackQuery, state: FSMContext):
     
     await state.clear()
     await call.message.edit_text("✅ Регистрация завершена! Просто отправьте мне .epub файл для публикации.")
+
+@dp.callback_query(Registration.waiting_for_presets, F.data == "demote_to_publisher")
+async def process_demote_to_publisher(call: types.CallbackQuery, state: FSMContext):
+    """Сброс роли переводчика до обычного пользователя из настроек."""
+    user_id = call.from_user.id
+    
+    await db.update_user_profile(user_id, {"is_translator": False})
+    
+    await state.clear()
+    await call.message.edit_text("✅ Роль изменена. Теперь вы обычный пользователь. Просто отправьте мне .epub файл для публикации.")
+
 
 @dp.callback_query(Registration.waiting_for_role, F.data == "role_translator")
 async def process_role_translator(call: types.CallbackQuery, state: FSMContext):
