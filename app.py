@@ -271,14 +271,14 @@ async def reg_skip_groups(call: types.CallbackQuery, state: FSMContext):
     username = f"@{user.username}" if user.username else user.first_name
     
     # При сбросе по умолчанию оставляем только РиФ
-    await db.update_user_groups(user.id, username, ["@testiktestik2"], True)
+    await db.update_user_groups(user.id, username, ["@ranobe_and"], True)
     
     data = await state.get_data()
     if data.get("is_edit_mode"):
         await state.clear()
         await call.message.edit_text("✅ Установлена только группа по умолчанию (РиФ)!")
     else:
-        await state.update_data(groups=["@testiktestik2"])
+        await state.update_data(groups=["@ranobe_and"])
         await ask_for_role(call.message, state)
         
     await call.answer()
@@ -305,8 +305,8 @@ async def reg_process_groups(message: types.Message, state: FSMContext):
 
     # Если пользователь редактирует группы, сохраняем текущий статус группы РиФ
     user_data = await db.get_user(user.id)
-    if user_data and "@testiktestik2" in user_data.get('groups', []):
-        valid_groups.append("@testiktestik2")
+    if user_data and "@ranobe_and" in user_data.get('groups', []):
+        valid_groups.append("@ranobe_and")
 
     unique_groups = list(dict.fromkeys(valid_groups))
     await db.update_user_groups(user.id, username, unique_groups, True)
@@ -322,7 +322,7 @@ async def reg_process_groups(message: types.Message, state: FSMContext):
     if not valid_groups:
         return await message.answer("❌ Список групп пуст. Пожалуйста, отправьте корректные данные.")
 
-    valid_groups.append("@testiktestik2")
+    valid_groups.append("@ranobe_and")
     unique_groups = list(dict.fromkeys(valid_groups))
     await db.update_user_groups(user.id, username, unique_groups, True)
     
@@ -484,7 +484,7 @@ async def change_groups(message: types.Message, state: FSMContext):
         
     current_groups = user_data.get('groups', [])
     # Проверяем, включена ли группа по умолчанию (РиФ)
-    has_default = "@testiktestik2" in current_groups
+    has_default = "@ranobe_and" in current_groups
     default_status_text = "🔴 Отключить группу РиФ" if has_default else "🟢 Включить группу РиФ"
     
     kb = InlineKeyboardMarkup(inline_keyboard=[
@@ -496,7 +496,7 @@ async def change_groups(message: types.Message, state: FSMContext):
     await state.set_state(Registration.waiting_for_groups)
     await state.update_data(is_edit_mode=True) 
     
-    clean_groups = [g for g in current_groups if g != "@testiktestik2"]
+    clean_groups = [g for g in current_groups if g != "@ranobe_and"]
     
     await message.answer(
         f"📁 <b>Ваши текущие личные группы:</b>\n<code>{', '.join(clean_groups) if clean_groups else 'Нет'}</code>\n"
@@ -512,11 +512,11 @@ async def toggle_default_group(call: types.CallbackQuery, state: FSMContext):
     user_data = await db.get_user(user_id)
     current_groups = user_data.get('groups', [])
     
-    if "@testiktestik2" in current_groups:
-        current_groups.remove("@testiktestik2")
+    if "@ranobe_and" in current_groups:
+        current_groups.remove("@ranobe_and")
         status_msg = "🔴 Группа по умолчанию (РиФ) отключена."
     else:
-        current_groups.append("@testiktestik2")
+        current_groups.append("@ranobe_and")
         status_msg = "🟢 Группа по умолчанию (РиФ) включена."
         
     username = f"@{call.from_user.username}" if call.from_user.username else call.from_user.first_name
