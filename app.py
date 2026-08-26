@@ -380,6 +380,38 @@ async def finish_presets(call: types.CallbackQuery, state: FSMContext):
         "Теперь просто отправьте мне <code>.epub</code> файл для начала работы."
     )
 
+# --- НОВАЯ КОМАНДА: НАСТРОЙКИ ---
+@dp.message(Command("settings"))
+async def settings_command(message: types.Message, state: FSMContext):
+    if message.chat.type != "private":
+        return
+        
+    user_data = await db.get_user(message.from_user.id)
+    if not user_data or not user_data.get('is_active'):
+        return await message.answer("❌ У вас нет доступа к боту или вы не зарегистрированы. Введите /start.")
+        
+    profile = user_data.get('profile', {})
+    is_translator = profile.get('is_translator', False)
+    
+    if not is_translator:
+        # Если это паблишер, предлагаем стать переводчиком
+        kb = InlineKeyboardMarkup(inline_keyboard=[
+            [InlineKeyboardButton(text="✍️ Стать переводчиком", callback_data="role_translator")]
+        ])
+        return await message.answer(
+            "Вы зарегистрированы как обычный пользователь.\nХотите стать переводчиком и настроить инструменты?", 
+            reply_markup=kb
+        )
+        
+    # Если переводчик, запускаем FSM меню пресетов
+    await state.update_data(profile=profile)
+    await state.set_state(Registration.waiting_for_presets)
+    await message.answer(
+        "⚙️ <b>Настройка личного меню</b>\n\n"
+        "Добавьте или уберите инструменты для будущих публикаций:",
+        reply_markup=get_presets_keyboard(profile)
+    )
+
 @dp.message(Command("groups"))
 async def change_groups(message: types.Message, state: FSMContext):
     if message.chat.type != "private":
@@ -499,6 +531,80 @@ async def help_user(message: types.Message):
     )
     await message.answer(help_text)
 
+async def process_batch(message: types.Message, state: FSMContext, user_data: dict):
+    """Фоновая задача для обработки накопленного пакета файлов."""
+    try:
+        await asyncio.sleep(3)  # Окно ожидания для пакетной загрузки
+    except asyncio.CancelledError:
+        # Если прилетел еще один файл, таймер отменяется и запускается заново
+        return
+
+    data = await state.get_data()
+    batch_files = data.get('batch_files', [])
+
+    if not batch_files:
+        return
+
+    await message.answer(f"✅ Принято файлов: {len(batch_files)}. Начинаю обработку...")
+
+    # Ищем EPUB и отделяем дополнительные файлы
+    epub_file = None
+    extras = []
+    
+    for f in batch_files:
+        if f['ext'] == '.epub' and not epub_file:
+            epub_file = f  # Берем первый найденный EPUB как главный
+        else:
+            extras.append(f)
+
+    # Проверка на наличие EPUB
+    if not epub_file:
+        for f in batch_files:
+            if os.path.exists(f['path']):
+                try:
+                    os.remove(f['path'])
+                except OSError:
+                    pass
+        await state.update_data(batch_files=[])
+        return await message.answer("❌ В пачке файлов нет .epub! Операция отменена. Пожалуйста, отправьте файлы заново.")
+
+    # Если EPUB найден, проводим тяжелый парсинг
+    epub_path = epub_file['path']
+    meta = await asyncio.to_thread(extract_metadata, epub_path)
+    cover = await asyncio.to_thread(extract_cover, epub_path)
+
+    # Запускаем основной 3-минутный таймер сессии
+    new_task = asyncio.create_task(check_and_clear(message, state))
+
+    profile = user_data.get('profile', {})
+    is_translator = profile.get('is_translator', False)
+
+    user_gl_opts = profile.get("gl", ["Нет"]) if profile.get("gl") else ["Нет"]
+    user_tr_opts = profile.get("tr", ["Нет"]) if profile.get("tr") else ["Нет"]
+    user_fl_opts = profile.get("fl", ["Нет"]) if profile.get("fl") else ["Нет"]
+    user_status_opts = profile.get("status", STATUS_OPTIONS) if profile.get("status") else STATUS_OPTIONS
+
+    await state.update_data(
+        path=epub_path, 
+        name=epub_file['name'], 
+        meta=meta, 
+        cover=cover, 
+        extras=extras, 
+        timer_task=new_task,
+        is_translator=is_translator,
+        profile=profile,
+        gl=user_gl_opts[0], 
+        tr=user_tr_opts[0], 
+        fl=user_fl_opts[0], 
+        status=user_status_opts[0],
+        batch_files=[]  # Очищаем очередь пакета
+    )
+    
+    await state.set_state(BookForm.choosing_tools)
+    new_data = await state.get_data()
+    await message.answer("✅ EPUB успешно обработан. Выберите инструменты:", reply_markup=get_tools_kb(new_data, is_translator))
+
+
 @dp.message(F.document)
 async def handle_docs(message: types.Message, state: FSMContext):
     if message.chat.type != "private": 
@@ -509,59 +615,45 @@ async def handle_docs(message: types.Message, state: FSMContext):
         return await message.answer("❌ У вас нет доступа к загрузке файлов.")
     
     if message.document.file_size > 20 * 1024 * 1024:
-        return await message.answer("❌ Файл больше 20 МБ.")
+        return await message.answer(f"❌ Файл {message.document.file_name} больше 20 МБ и был пропущен.")
 
     ext = os.path.splitext(message.document.file_name or "")[1].lower()
     if ext not in ALLOWED_EXTENSIONS:
-        return await message.answer("❌ Формат не поддерживается.")
+        return await message.answer(f"❌ Формат {ext} не поддерживается и был пропущен.")
 
+    # Сохраняем файл
     path = os.path.join(TEMP_DIR, f"{uuid.uuid4()}{ext}")
     await bot.download(message.document, destination=path)
     
     data = await state.get_data()
-    extras = data.get('extras', [])
     
-    if ext == '.epub' and not data.get('path'):
-        old_task = data.get('timer_task')
-        if old_task and not old_task.done():
-            old_task.cancel()
+    # Защита от наслоения сессий: если юзер кидает файлы, будучи уже в меню настройки
+    current_state = await state.get_state()
+    if current_state == BookForm.choosing_tools.state:
+        # Отменяем старый таймер сессии и удаляем старые файлы
+        old_timer = data.get('timer_task')
+        if old_timer and not old_timer.done():
+            old_timer.cancel()
+        files_to_remove = [data.get('path'), data.get('cover')] + [i['path'] for i in data.get('extras', [])]
+        for p in files_to_remove:
+            if p and os.path.exists(p):
+                try: os.remove(p)
+                except OSError: pass
+        await state.clear()
+        data = {}
 
-        meta = await asyncio.to_thread(extract_metadata, path)
-        cover = await asyncio.to_thread(extract_cover, path)
-        new_task = asyncio.create_task(check_and_clear(message, state))
+    batch_files = data.get('batch_files', [])
+    batch_files.append({"path": path, "name": message.document.file_name, "ext": ext})
+    
+    # Механизм антидребезга (Debounce)
+    debounce_task = data.get('debounce_task')
+    if debounce_task and not debounce_task.done():
+        debounce_task.cancel()  # Отменяем предыдущее ожидание
         
-        # Загрузка персонального профиля
-        profile = user_data.get('profile', {})
-        is_translator = profile.get('is_translator', False)
-        
-        # Получаем списки опций из профиля (или дефолт, если пусто)
-        user_gl_opts = profile.get("gl", ["Нет"]) if profile.get("gl") else ["Нет"]
-        user_tr_opts = profile.get("tr", ["Нет"]) if profile.get("tr") else ["Нет"]
-        user_fl_opts = profile.get("fl", ["Нет"]) if profile.get("fl") else ["Нет"]
-        user_status_opts = profile.get("status", STATUS_OPTIONS) if profile.get("status") else STATUS_OPTIONS
-
-        await state.update_data(
-            path=path, 
-            name=message.document.file_name, 
-            meta=meta, 
-            cover=cover, 
-            extras=extras, 
-            timer_task=new_task,
-            is_translator=is_translator,
-            profile=profile,
-            gl=user_gl_opts[0], 
-            tr=user_tr_opts[0], 
-            fl=user_fl_opts[0], 
-            status=user_status_opts[0]
-        )
-        await state.set_state(BookForm.choosing_tools)
-        new_data = await state.get_data()
-        await message.answer("✅ EPUB принят. Жду доп. файлы...", reply_markup=get_tools_kb(new_data, is_translator))
-        
-    else:
-        extras.append({"path": path, "name": message.document.file_name})
-        await state.update_data(extras=extras)
-        await message.answer(f"📎 {message.document.file_name} в очереди.")
+    # Запускаем новое ожидание (3 секунды)
+    new_debounce_task = asyncio.create_task(process_batch(message, state, user_data))
+    
+    await state.update_data(batch_files=batch_files, debounce_task=new_debounce_task)
 
 @dp.callback_query(BookForm.choosing_tools)
 async def callbacks(call: types.CallbackQuery, state: FSMContext):
