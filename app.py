@@ -398,6 +398,10 @@ async def settings_command(message: types.Message, state: FSMContext):
         kb = InlineKeyboardMarkup(inline_keyboard=[
             [InlineKeyboardButton(text="✍️ Стать переводчиком", callback_data="role_translator")]
         ])
+        
+        # Устанавливаем нужное состояние перед показом кнопки
+        await state.set_state(Registration.waiting_for_role)
+        
         return await message.answer(
             "Вы зарегистрированы как обычный пользователь.\nХотите стать переводчиком и настроить инструменты?", 
             reply_markup=kb
