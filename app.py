@@ -1,17 +1,24 @@
-import os, uuid, zipfile, re, asyncio, tempfile, logging, random
+import asyncio
+import logging
+import os
+import random
+import re
+import tempfile
+import uuid
+import zipfile
 from html import escape, unescape
-from bs4 import BeautifulSoup
-from dotenv import load_dotenv
-from aiohttp import web
 
+from aiohttp import web
 from aiogram import Bot, Dispatcher, F, types
 from aiogram.client.default import DefaultBotProperties
 from aiogram.filters import Command, Filter
 from aiogram.fsm.context import FSMContext
 from aiogram.fsm.state import State, StatesGroup
 from aiogram.fsm.storage.memory import MemoryStorage
+from aiogram.types import FSInputFile, InlineKeyboardButton, InlineKeyboardMarkup, LinkPreviewOptions
 from aiogram.utils.keyboard import InlineKeyboardBuilder
-from aiogram.types import InlineKeyboardMarkup, InlineKeyboardButton, FSInputFile, LinkPreviewOptions
+from bs4 import BeautifulSoup
+from dotenv import load_dotenv
 
 from google_db import GoogleSheetsDB
 
@@ -51,9 +58,9 @@ STATUS_OPTIONS = ["В процессе", "Фулл", "Брошен"]
 
 # Базовые пресеты для регистрации переводчиков
 DEFAULT_PRESETS = {
-    "gl": ["Gemini 3.5", "ChatGPT 4", "DeepL", "Claude 3"],
-    "tr": ["Ru", "En"],
-    "fl": ["Стандартный"]
+    "gl": ["Gemini 3.0", "Gemini 3.1", "Gemini 3.5", "Gemini 3.6", "Gemini 3.7", "DeepSeek"],
+    "tr": ["Gemini 3.0", "Gemini 3.1", "Gemini 3.5", "Gemini 3.6", "Gemini 3.7", "DeepSeek"],
+    "fl": ["ChatGpt", "DeepSeek", "Нет"]
 }
 
 # ==========================================
@@ -101,21 +108,24 @@ def get_tools_kb(data: dict, is_translator: bool) -> InlineKeyboardMarkup:
 
 async def check_and_clear(message: types.Message, state: FSMContext):
     try:
-        await asyncio.sleep(30)  # Ждем 30 секунд
+        await asyncio.sleep(180)  # Таймаут 3 минуты
     except asyncio.CancelledError:
         return 
 
-    data = await state.get_data()
-    files_to_remove = [data.get('path'), data.get('cover')] + [i['path'] for i in data.get('extras', [])]
-    for p in files_to_remove:
-        if p and os.path.exists(p): 
-            try:
-                os.remove(p)
-            except Exception as e:
-                logging.error(f"Ошибка удаления файла {p}: {e}")
-                
-    await state.clear()
-    await message.answer("❌ Время вышло, EPUB не получен. Все файлы удалены.")
+    # ПРОВЕРКА: удаляем файлы только если юзер всё ещё находится в процессе публикации
+    current_state = await state.get_state()
+    if current_state == BookForm.choosing_tools.state:
+        data = await state.get_data()
+        files_to_remove = [data.get('path'), data.get('cover')] + [i['path'] for i in data.get('extras', [])]
+        for p in files_to_remove:
+            if p and os.path.exists(p): 
+                try:
+                    os.remove(p)
+                except OSError:
+                    pass
+                    
+        await state.clear()
+        await message.answer("❌ Время вышло, публикация отменена. Все временные файлы удалены.")
 
 # ==========================================
 # 4. ПАРСЕРЫ (ОСТАВЛЕНЫ БЕЗ ИЗМЕНЕНИЙ)
@@ -251,8 +261,14 @@ async def reg_skip_groups(call: types.CallbackQuery, state: FSMContext):
     username = f"@{user.username}" if user.username else user.first_name
     await db.update_user_groups(user.id, username, ["-1003960669210"], True)
     
-    await state.update_data(groups=["-1003960669210"])
-    await ask_for_role(call.message, state)
+    data = await state.get_data()
+    if data.get("is_edit_mode"):
+        await state.clear()
+        await call.message.edit_text("✅ Группы по умолчанию успешно установлены!")
+    else:
+        await state.update_data(groups=["-1003960669210"])
+        await ask_for_role(call.message, state)
+        
     await call.answer()
 
 @dp.message(Registration.waiting_for_groups, F.text)
@@ -264,8 +280,13 @@ async def reg_process_groups(message: types.Message, state: FSMContext):
     unique_groups = list(dict.fromkeys(user_groups))
     await db.update_user_groups(user.id, username, unique_groups, True)
     
-    await state.update_data(groups=unique_groups)
-    await ask_for_role(message, state)
+    data = await state.get_data()
+    if data.get("is_edit_mode"):
+        await state.clear()
+        await message.answer("✅ Новые группы для рассылки успешно сохранены!")
+    else:
+        await state.update_data(groups=unique_groups)
+        await ask_for_role(message, state)
 
 @dp.callback_query(Registration.waiting_for_role, F.data == "role_publisher")
 async def process_role_publisher(call: types.CallbackQuery, state: FSMContext):
@@ -305,6 +326,11 @@ async def toggle_preset(call: types.CallbackQuery, state: FSMContext):
     await state.update_data(profile=profile)
     await call.message.edit_reply_markup(reply_markup=get_presets_keyboard(profile))
 
+@dp.callback_query(F.data == "ignore")
+async def ignore_callback(call: types.CallbackQuery):
+    """Глушит индикатор загрузки при нажатии на информационные кнопки."""
+    await call.answer()
+
 @dp.callback_query(Registration.waiting_for_presets, F.data.startswith("add_custom_"))
 async def add_custom_item(call: types.CallbackQuery, state: FSMContext):
     """Режим ожидания текста для новой кастомной настройки."""
@@ -320,11 +346,13 @@ async def add_custom_item(call: types.CallbackQuery, state: FSMContext):
 
 @dp.message(Registration.waiting_for_custom, F.text)
 async def process_custom_item(message: types.Message, state: FSMContext):
-    """Добавляет текст в выбранную категорию JSON и возвращает меню."""
     data = await state.get_data()
     profile = data.get("profile", {})
     category = data.get("custom_category", "gl")
-    custom_item = message.text.strip()
+    
+    raw_text = message.text.strip()
+    # Универсальная обрезка для любого инструмента (защита от лимита 64 байт в callback_data)
+    custom_item = raw_text if len(raw_text) <= 30 else raw_text[:30] + "..."
     
     if category not in profile:
         profile[category] = []
@@ -368,6 +396,9 @@ async def change_groups(message: types.Message, state: FSMContext):
     ])
     
     await state.set_state(Registration.waiting_for_groups)
+    # СЕКРЕТНЫЙ ФЛАГ: указываем, что это режим редактирования, а не регистрация
+    await state.update_data(is_edit_mode=True) 
+    
     await message.answer(
         f"📁 <b>Ваши текущие группы:</b>\n<code>{', '.join(current_groups)}</code>\n\n"
         "👉 Чтобы изменить список, отправьте <b>НОВЫЕ</b> группы через запятую (например: <code>@new_group, -100123456</code>).\n"
@@ -538,6 +569,11 @@ async def callbacks(call: types.CallbackQuery, state: FSMContext):
         return await call.answer("❌ Вы заблокированы. Действие отменено.", show_alert=True)
     
     data = await state.get_data()
+    
+    # Щит от критической ошибки (если юзер нажал кнопку после таймаута)
+    if not data:
+        return await call.message.edit_text("❌ Время сессии истекло. Пожалуйста, отправьте файл заново.")
+        
     profile = data.get('profile', {})
     is_translator = data.get('is_translator', False)
     
