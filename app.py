@@ -32,6 +32,9 @@ dp = Dispatcher(storage=MemoryStorage())
 class BookForm(StatesGroup):
     choosing_tools = State()
 
+class Registration(StatesGroup):
+    waiting_for_groups = State()
+
 async def check_and_clear(message: types.Message, state: FSMContext):
     try:
         await asyncio.sleep(30) # Ждем 30 секунд
@@ -163,13 +166,66 @@ def count_chapters(epub_path):
 
 # --- ХЕНДЛЕРЫ ---
 @dp.message(Command("start"))
-async def start(message: types.Message):
-    if message.chat.type == "private":
-        # Проверка прав доступа через Google Таблицу
-        if not await db.check_access(message.from_user.id):
-            return await message.answer("❌ У вас нет доступа к боту. Обратитесь к администратору.")
+async def start(message: types.Message, state: FSMContext):
+    if message.chat.type != "private": 
+        return
         
-        await message.answer("📚 Отправь .epub файл.")
+    # Проверяем наличие пользователя в БД
+    if await db.check_access(message.from_user.id):
+        return await message.answer("📚 Авторизация подтверждена. Отправь .epub файл.")
+    
+    # Если пользователя нет, начинаем регистрацию
+    kb = InlineKeyboardMarkup(inline_keyboard=[
+        [InlineKeyboardButton(text="Оставить по умолчанию Риф", callback_data="skip_groups")]
+    ])
+    
+    await state.set_state(Registration.waiting_for_groups)
+    welcome_text = (
+        "👋 <b>Добро пожаловать! Вас нет в базе.</b>\n\n"
+        "По умолчанию бот публикует файлы в группу <b>Риф</b>.\n\n"
+        "👉 Если вы хотите добавить свои группы, отправьте их ID через запятую прямо сейчас (например: <code>@group1, -100123456</code>).\n"
+        "👉 Либо нажмите кнопку ниже, чтобы использовать только группу по умолчанию."
+    )
+    await message.answer(welcome_text, reply_markup=kb)
+
+@dp.callback_query(Registration.waiting_for_groups, F.data == "skip_groups")
+async def reg_skip_groups(call: types.CallbackQuery, state: FSMContext):
+    """Пользователь нажал кнопку 'По умолчанию'."""
+    user = call.from_user
+    username = f"@{user.username}" if user.username else user.first_name
+    
+    # Передаем список с одной дефолтной группой
+    await db.update_user_groups(user.id, username, ["-1003960669210"], True)
+    
+    await state.clear()
+    await call.message.edit_text("✅ <b>Авторизация успешна!</b>\nНастроена группа по умолчанию (Риф).\n\n📚 Отправьте .epub файл.")
+
+@dp.message(Registration.waiting_for_groups, F.text)
+async def reg_process_groups(message: types.Message, state: FSMContext):
+    """Пользователь прислал свои группы текстом."""
+    user = message.from_user
+    username = f"@{user.username}" if user.username else user.first_name
+    
+    # 1. Разбиваем текст по запятым
+    user_groups = [g.strip() for g in message.text.split(',') if g.strip()]
+    
+    # 2. Обязательно добавляем дефолтную группу
+    user_groups.append("-1003960669210")
+    
+    # 3. Удаляем возможные дубликаты (с сохранением порядка)
+    unique_groups = list(dict.fromkeys(user_groups))
+    
+    # 4. Записываем в БД
+    await db.update_user_groups(user.id, username, unique_groups, True)
+    
+    await state.clear()
+    groups_str = ", ".join(unique_groups)
+    await message.answer(
+        f"✅ <b>Авторизация успешна!</b>\n"
+        f"Сохранены группы: <code>{groups_str}</code>\n\n"
+        f"📚 Отправьте .epub файл."
+    )
+
 
 @dp.message(F.document)
 async def handle_docs(message: types.Message, state: FSMContext):
