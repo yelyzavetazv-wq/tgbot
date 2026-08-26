@@ -256,6 +256,31 @@ async def callbacks(call: types.CallbackQuery, state: FSMContext):
         if task:
             task.cancel()
         await call.message.edit_text("⏳ Публикация началась... подожди немного.")
+
+
+        # --- ТЕСТОВЫЙ БЛОК БД ---
+        try:
+            user_data = await db.get_user(call.from_user.id)
+            if not user_data:
+                await call.message.edit_text("❌ Ошибка: Вы не найдены в базе данных.")
+                return
+
+            groups = user_data.get('groups')
+            test_msg = (
+                f"✅ Таблица прочитана успешно!\n"
+                f"👤 Имя: {user_data.get('username')}\n"
+                f"📁 Группы: {groups}\n"
+                f"🟢 Активен: {user_data.get('is_active')}"
+            )
+            await call.message.edit_text(test_msg)
+        except Exception as e:
+            logging.error(f"Ошибка парсинга БД при публикации: {e}")
+            await call.message.edit_text(f"❌ Ошибка БД: {e}")
+        
+        return # ПРИНУДИТЕЛЬНЫЙ СТОП ДЛЯ ТЕСТА
+        # ------------------------
+
+
         
         try:
             # 1. СОЗДАЕМ ТЕМЫ
