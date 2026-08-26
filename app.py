@@ -11,6 +11,7 @@ from aiogram.fsm.state import State, StatesGroup
 from aiogram.fsm.storage.memory import MemoryStorage
 from aiogram.types import InlineKeyboardMarkup, InlineKeyboardButton, FSInputFile, LinkPreviewOptions
 from google_db import GoogleSheetsDB
+from aiogram.filters import Command, Filter
 
 load_dotenv()
 logging.basicConfig(level=logging.INFO)
@@ -35,6 +36,12 @@ class BookForm(StatesGroup):
 
 class Registration(StatesGroup):
     waiting_for_groups = State()
+
+class IsAdmin(Filter):
+    """Кастомный фильтр для проверки прав администратора через БД."""
+    async def __call__(self, message: types.Message) -> bool:
+        user_data = await db.get_user(message.from_user.id)
+        return bool(user_data and user_data.get('is_admin'))
 
 
 async def check_and_clear(message: types.Message, state: FSMContext):
@@ -237,6 +244,57 @@ async def change_groups(message: types.Message, state: FSMContext):
 async def cancel_group_change(call: types.CallbackQuery, state: FSMContext):
     await state.clear()
     await call.message.edit_text("✅ Изменение групп отменено. Оставлен прежний список.")
+
+
+@dp.message(Command("ban"), IsAdmin())
+async def ban_user(message: types.Message):
+    """Блокировка пользователя по ID или Username."""
+    args = message.text.split(maxsplit=1)
+    if len(args) < 2:
+        return await message.answer("❌ Укажите ID или Username.\n👉 Пример: <code>/ban @username</code>")
+        
+    target = args[1]
+    target_id, target_data = await db.find_user_by_identifier(target)
+    
+    if not target_id:
+        return await message.answer(f"❌ Пользователь <b>{escape(target)}</b> не найден в базе.")
+        
+    if target_id == message.from_user.id:
+        return await message.answer("❌ Вы не можете забанить самого себя.")
+        
+    if target_data.get('is_admin'):
+        return await message.answer("❌ Вы не можете забанить другого администратора.")
+        
+    if not target_data.get('is_active'):
+        return await message.answer(f"⚠️ Пользователь <b>{escape(target_data.get('username', target))}</b> уже находится в бане.")
+        
+    success = await db.set_user_active(target_id, False)
+    if success:
+        await message.answer(f"✅ Пользователь <b>{escape(target_data.get('username', str(target_id)))}</b> (ID: <code>{target_id}</code>) успешно забанен.")
+    else:
+        await message.answer("❌ Произошла ошибка при обращении к базе данных.")
+
+@dp.message(Command("unban"), IsAdmin())
+async def unban_user(message: types.Message):
+    """Разблокировка пользователя по ID или Username."""
+    args = message.text.split(maxsplit=1)
+    if len(args) < 2:
+        return await message.answer("❌ Укажите ID или Username.\n👉 Пример: <code>/unban @username</code>")
+        
+    target = args[1]
+    target_id, target_data = await db.find_user_by_identifier(target)
+    
+    if not target_id:
+        return await message.answer(f"❌ Пользователь <b>{escape(target)}</b> не найден в базе.")
+        
+    if target_data.get('is_active'):
+        return await message.answer(f"⚠️ Пользователь <b>{escape(target_data.get('username', target))}</b> не забанен (уже активен).")
+        
+    success = await db.set_user_active(target_id, True)
+    if success:
+        await message.answer(f"✅ Пользователь <b>{escape(target_data.get('username', str(target_id)))}</b> (ID: <code>{target_id}</code>) успешно разбанен.")
+    else:
+        await message.answer("❌ Произошла ошибка при обращении к базе данных.")
 
 
 @dp.message(F.document)
