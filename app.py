@@ -173,9 +173,19 @@ async def start(message: types.Message, state: FSMContext):
     if message.chat.type != "private": 
         return
         
-    if await db.check_access(message.from_user.id):
-        return await message.answer("📚 Авторизация подтверждена. Отправь .epub файл.")
+    user_data = await db.get_user(message.from_user.id)
     
+    # Состояние 1: Пользователь найден и Активен
+    if user_data and user_data.get('is_active'):
+        return await message.answer("📚 Авторизация подтверждена. Отправь .epub файл.")
+        
+    # Состояние 2: Пользователь найден, но Забанен (is_active == False)
+    if user_data and not user_data.get('is_active'):
+        admins = await db.get_all_admins()
+        admins_text = ", ".join(admins) if admins else "администраторам"
+        return await message.answer(f"❌ Вы заблокированы. Для разблокировки напишите: {admins_text}")
+    
+    # Состояние 3: Пользователя нет в базе (Новый)
     kb = InlineKeyboardMarkup(inline_keyboard=[
         [InlineKeyboardButton(text="Оставить по умолчанию Риф", callback_data="skip_groups")]
     ])
@@ -352,6 +362,8 @@ async def handle_docs(message: types.Message, state: FSMContext):
 
 @dp.callback_query(BookForm.choosing_tools)
 async def callbacks(call: types.CallbackQuery, state: FSMContext):
+    if not await db.check_access(call.from_user.id):
+        return await call.answer("❌ Вы заблокированы. Действие отменено.", show_alert=True)
     data = await state.get_data()
     
     def get_next(current, options):
