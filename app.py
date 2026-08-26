@@ -201,6 +201,7 @@ async def reg_skip_groups(call: types.CallbackQuery, state: FSMContext):
     await call.message.edit_text("✅ <b>Авторизация успешна!</b>\nНастроена группа по умолчанию (Риф).\n\n📚 Отправьте .epub файл.")
 
 @dp.message(Registration.waiting_for_groups, F.text)
+
 async def reg_process_groups(message: types.Message, state: FSMContext):
     """Пользователь прислал свои группы текстом."""
     user = message.from_user
@@ -225,6 +226,37 @@ async def reg_process_groups(message: types.Message, state: FSMContext):
         f"Сохранены группы: <code>{groups_str}</code>\n\n"
         f"📚 Отправьте .epub файл."
     )
+
+@dp.message(Command("groups"))
+async def change_groups(message: types.Message, state: FSMContext):
+    """Команда для изменения списка групп авторизованного пользователя."""
+    if message.chat.type != "private":
+        return
+        
+    user_data = await db.get_user(message.from_user.id)
+    if not user_data or not user_data.get('is_active'):
+        return await message.answer("❌ У вас нет доступа к боту.")
+        
+    current_groups = user_data.get('groups', [])
+    
+    kb = InlineKeyboardMarkup(inline_keyboard=[
+        [InlineKeyboardButton(text="Оставить текущие / Отмена", callback_data="cancel_group_change")],
+        [InlineKeyboardButton(text="Сбросить по умолчанию (Риф)", callback_data="skip_groups")]
+    ])
+    
+    await state.set_state(Registration.waiting_for_groups)
+    await message.answer(
+        f"📁 <b>Ваши текущие группы:</b>\n<code>{', '.join(current_groups)}</code>\n\n"
+        "👉 Чтобы изменить список, отправьте <b>НОВЫЕ</b> группы через запятую (например: <code>@new_group, -100123456</code>).\n"
+        "⚠️ <i>Внимание: Группа по умолчанию (Риф) добавляется всегда. Ваши старые личные группы будут заменены новыми.</i>",
+        reply_markup=kb
+    )
+
+@dp.callback_query(Registration.waiting_for_groups, F.data == "cancel_group_change")
+async def cancel_group_change(call: types.CallbackQuery, state: FSMContext):
+    """Отмена изменения групп."""
+    await state.clear()
+    await call.message.edit_text("✅ Изменение групп отменено. Оставлен прежний список.")
 
 
 @dp.message(F.document)
