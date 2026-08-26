@@ -284,9 +284,28 @@ async def reg_skip_groups(call: types.CallbackQuery, state: FSMContext):
 async def reg_process_groups(message: types.Message, state: FSMContext):
     user = message.from_user
     username = f"@{user.username}" if user.username else user.first_name
-    user_groups = [g.strip() for g in message.text.split(',') if g.strip()]
-    user_groups.append("-1003960669210")
-    unique_groups = list(dict.fromkeys(user_groups))
+    
+    # Разбиваем введенный текст по запятой и очищаем от пробелов
+    raw_groups = [g.strip() for g in message.text.split(',') if g.strip()]
+    
+    valid_groups = []
+    for g in raw_groups:
+        # Проверяем формат: либо начинается с @, либо это числовой ID (может начинаться с минуса)
+        if g.startswith('@') or (g.lstrip('-').isdigit()):
+            valid_groups.append(g)
+        else:
+            # Если пользователь ввел команду (например, /ban) или некорректный текст
+            return await message.answer(
+                f"❌ Некорректный формат группы: <code>{escape(g)}</code>.\n"
+                "Группа должна начинаться с символа <code>@</code> или быть числовым ID (например: <code>-100123456</code>).\n"
+                "Пожалуйста, отправьте список групп заново."
+            )
+            
+    if not valid_groups:
+        return await message.answer("❌ Список групп пуст. Пожалуйста, отправьте корректные данные.")
+
+    valid_groups.append("-1003960669210")
+    unique_groups = list(dict.fromkeys(valid_groups))
     await db.update_user_groups(user.id, username, unique_groups, True)
     
     data = await state.get_data()
