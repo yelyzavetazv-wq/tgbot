@@ -16,10 +16,10 @@ load_dotenv()
 logging.basicConfig(level=logging.INFO)
 
 TOKEN = os.getenv("BOT_TOKEN")
-GROUP_USERNAME = os.getenv("GROUP_USERNAME")
 ALLOWED_EXTENSIONS = {'.epub', '.pdf', '.txt', '.docx', '.doc', '.fb2', '.mobi'}
 TEMP_DIR = tempfile.gettempdir()
 db = GoogleSheetsDB(os.getenv("SPREADSHEET_ID"))
+
 # Списки опций
 GL_OPTIONS = ["Gemini 3.0", "Gemini 3.1", "Gemini 3.5", "DeepSeek V4 Flash"]
 TR_OPTIONS = ["Gemini 3.0", "Gemini 3.1", "Gemini 3.5", "DeepSeek V4 Flash"]
@@ -29,15 +29,17 @@ STATUS_OPTIONS = ["В процессе", "Фулл", "Брошен"]
 bot = Bot(token=TOKEN, default=DefaultBotProperties(parse_mode="HTML"))
 dp = Dispatcher(storage=MemoryStorage())
 
+
 class BookForm(StatesGroup):
     choosing_tools = State()
 
 class Registration(StatesGroup):
     waiting_for_groups = State()
 
+
 async def check_and_clear(message: types.Message, state: FSMContext):
     try:
-        await asyncio.sleep(30) # Ждем 30 секунд
+        await asyncio.sleep(30)  # Ждем 30 секунд
     except asyncio.CancelledError:
         # Задача была отменена (пользователь нажал "ПУБЛИКАЦИЯ" или "ОТМЕНА")
         return 
@@ -56,6 +58,7 @@ async def check_and_clear(message: types.Message, state: FSMContext):
     await state.clear()
     await message.answer("❌ Время вышло, EPUB не получен. Все файлы удалены.")
 
+
 # --- ИНСТРУМЕНТЫ И КНОПКИ ---
 def get_tools_kb(data):
     return InlineKeyboardMarkup(inline_keyboard=[
@@ -67,6 +70,7 @@ def get_tools_kb(data):
         [InlineKeyboardButton(text="❌ ОТМЕНА", callback_data="cancel_all")]
     ])
 
+
 # --- ПАРСИНГ ---
 def extract_cover(epub_path):
     try:
@@ -76,21 +80,26 @@ def extract_cover(epub_path):
                 with z.open('titlepage.xhtml') as f:
                     soup = BeautifulSoup(f.read(), 'xml')
                     img = soup.find('image')
-                    if img and img.has_attr('xlink:href'): cover_filename = img['xlink:href']
+                    if img and img.has_attr('xlink:href'): 
+                        cover_filename = img['xlink:href']
             
             if not cover_filename:
                 for name in z.namelist():
                     if name.lower().endswith(('.jpg', '.jpeg', '.png')):
-                        cover_filename = name; break
+                        cover_filename = name
+                        break
             
             if cover_filename:
                 for name in z.namelist():
                     if name.endswith(cover_filename):
                         path = os.path.join(TEMP_DIR, f"{uuid.uuid4().hex}.jpg")
-                        with open(path, "wb") as f: f.write(z.read(name))
+                        with open(path, "wb") as f: 
+                            f.write(z.read(name))
                         return path
-    except: pass
+    except: 
+        pass
     return None
+
 
 def extract_metadata(epub_path):
     meta = {"titles": [], "author": "?", "tags": [], "links": [], "desc": "Описание отсутствует"}
@@ -100,69 +109,56 @@ def extract_metadata(epub_path):
                 if name.endswith('.opf'):
                     with z.open(name) as f:
                         soup = BeautifulSoup(f.read(), 'xml')
+                        
                         t = soup.find('dc:title')
-                        if t and t.text: meta["titles"] = [p.strip() for p in t.text.split('/') if p.strip()]
+                        if t and t.text: 
+                            meta["titles"] = [p.strip() for p in t.text.split('/') if p.strip()]
+                            
                         c = soup.find('dc:creator')
-                        if c and c.text.strip(): meta["author"] = c.text.strip()
+                        if c and c.text.strip(): 
+                            meta["author"] = c.text.strip()
+                            
                         meta["tags"] = [f"#{re.sub(r'[^a-zA-Zа-яА-Я0-9]+', '_', tag.text.strip()).strip('_')}" for tag in soup.find_all('dc:subject')]
                         
                         d = soup.find('dc:description')
                         if d:
-                            # 1. Получаем содержимое тега как строку
                             raw_desc = str(d)
-                            # 2. Очищаем от XML-тегов самого описания вручную
                             text = raw_desc.replace('<dc:description>', '').replace('</dc:description>', '')
-                            # 3. Раскодируем HTML-сущности (&lt; в <, &gt; в >)
-                            from html import unescape
                             text = unescape(text)
-                            # 4. Убираем HTML-теги, которые остались после раскодировки (<div>, <p> и т.д.)
-                            # Мы используем регулярку для удаления любого текста в <...>
                             clean_text = re.sub(r'<[^>]+>', '\n', text)
-                            # 5. Чистим от лишних пустых строк
                             meta["desc"] = "\n".join([line.strip() for line in clean_text.splitlines() if line.strip()])
                         else:
                             meta["desc"] = "Описание отсутствует"
-
-                        #=========================================
-                        #d = soup.find('dc:description')
-                        #if d and d.text:
-                            #inner = BeautifulSoup(d.text, 'html.parser')
-                            #meta["desc"] = "\n".join([p.get_text(strip=True) for p in inner.find_all('p') if p.get_text(strip=True)])
-                       #============================================ 
-                        
-                        
                         
                         p = soup.find('dc:publisher')
-                        if p and p.text: meta["links"] = [l for l in p.text.split() if l.startswith('http')]
+                        if p and p.text: 
+                            meta["links"] = [l for l in p.text.split() if l.startswith('http')]
                     break
-    except: pass
+    except: 
+        pass
     return meta
+
 
 def count_chapters(epub_path):
     try:
         with zipfile.ZipFile(epub_path, 'r') as z:
-            # Ищем файл .ncx
             for name in z.namelist():
                 if name.endswith('.ncx'):
                     with z.open(name) as f:
                         soup = BeautifulSoup(f.read(), 'xml')
-                        # Ищем все точки навигации
                         nav_points = soup.find_all('navPoint')
                         if nav_points:
-                            # Берем самый последний navPoint
                             last_point = nav_points[-1]
-                            # Пытаемся найти текст внутри него (название главы)
                             text = last_point.find('text').get_text()
-                            
-                            # Пытаемся вытащить число из названия (например, "Глава 161")
                             numbers = re.findall(r'\d+', text)
                             if numbers:
-                                return numbers[-1] # Возвращаем последнее найденное число
+                                return numbers[-1]
                             else:
-                                return len(nav_points) # Если чисел нет, вернем просто количество
+                                return len(nav_points)
     except Exception as e:
         logging.error(f"Ошибка подсчета: {e}")
     return "?"
+
 
 # --- ХЕНДЛЕРЫ ---
 @dp.message(Command("start"))
@@ -170,11 +166,9 @@ async def start(message: types.Message, state: FSMContext):
     if message.chat.type != "private": 
         return
         
-    # Проверяем наличие пользователя в БД
     if await db.check_access(message.from_user.id):
         return await message.answer("📚 Авторизация подтверждена. Отправь .epub файл.")
     
-    # Если пользователя нет, начинаем регистрацию
     kb = InlineKeyboardMarkup(inline_keyboard=[
         [InlineKeyboardButton(text="Оставить по умолчанию Риф", callback_data="skip_groups")]
     ])
@@ -188,37 +182,24 @@ async def start(message: types.Message, state: FSMContext):
     )
     await message.answer(welcome_text, reply_markup=kb)
 
+
 @dp.callback_query(Registration.waiting_for_groups, F.data == "skip_groups")
 async def reg_skip_groups(call: types.CallbackQuery, state: FSMContext):
-    """Пользователь нажал кнопку 'По умолчанию'."""
     user = call.from_user
     username = f"@{user.username}" if user.username else user.first_name
-    
-    # Передаем список с одной дефолтной группой
     await db.update_user_groups(user.id, username, ["-1003960669210"], True)
-    
     await state.clear()
     await call.message.edit_text("✅ <b>Авторизация успешна!</b>\nНастроена группа по умолчанию (Риф).\n\n📚 Отправьте .epub файл.")
 
-@dp.message(Registration.waiting_for_groups, F.text)
 
+@dp.message(Registration.waiting_for_groups, F.text)
 async def reg_process_groups(message: types.Message, state: FSMContext):
-    """Пользователь прислал свои группы текстом."""
     user = message.from_user
     username = f"@{user.username}" if user.username else user.first_name
-    
-    # 1. Разбиваем текст по запятым
     user_groups = [g.strip() for g in message.text.split(',') if g.strip()]
-    
-    # 2. Обязательно добавляем дефолтную группу
     user_groups.append("-1003960669210")
-    
-    # 3. Удаляем возможные дубликаты (с сохранением порядка)
     unique_groups = list(dict.fromkeys(user_groups))
-    
-    # 4. Записываем в БД
     await db.update_user_groups(user.id, username, unique_groups, True)
-    
     await state.clear()
     groups_str = ", ".join(unique_groups)
     await message.answer(
@@ -227,9 +208,9 @@ async def reg_process_groups(message: types.Message, state: FSMContext):
         f"📚 Отправьте .epub файл."
     )
 
+
 @dp.message(Command("groups"))
 async def change_groups(message: types.Message, state: FSMContext):
-    """Команда для изменения списка групп авторизованного пользователя."""
     if message.chat.type != "private":
         return
         
@@ -238,7 +219,6 @@ async def change_groups(message: types.Message, state: FSMContext):
         return await message.answer("❌ У вас нет доступа к боту.")
         
     current_groups = user_data.get('groups', [])
-    
     kb = InlineKeyboardMarkup(inline_keyboard=[
         [InlineKeyboardButton(text="Оставить текущие / Отмена", callback_data="cancel_group_change")],
         [InlineKeyboardButton(text="Сбросить по умолчанию (Риф)", callback_data="skip_groups")]
@@ -252,25 +232,23 @@ async def change_groups(message: types.Message, state: FSMContext):
         reply_markup=kb
     )
 
+
 @dp.callback_query(Registration.waiting_for_groups, F.data == "cancel_group_change")
 async def cancel_group_change(call: types.CallbackQuery, state: FSMContext):
-    """Отмена изменения групп."""
     await state.clear()
     await call.message.edit_text("✅ Изменение групп отменено. Оставлен прежний список.")
 
 
 @dp.message(F.document)
 async def handle_docs(message: types.Message, state: FSMContext):
-    if message.chat.type != "private": return
+    if message.chat.type != "private": 
+        return
     
-    # === НОВАЯ ПРОВЕРКА БД ===
     if not await db.check_access(message.from_user.id):
         return await message.answer("❌ У вас нет доступа к загрузке файлов.")
-    # =========================
     
     if message.document.file_size > 20 * 1024 * 1024:
         return await message.answer("❌ Файл больше 20 МБ.")
-# ... остальной код функции остается без изменений
 
     ext = os.path.splitext(message.document.file_name or "")[1].lower()
     if ext not in ALLOWED_EXTENSIONS:
@@ -282,29 +260,26 @@ async def handle_docs(message: types.Message, state: FSMContext):
     data = await state.get_data()
     extras = data.get('extras', [])
     
-    # ЕСЛИ EPUB (начало процесса)
     if ext == '.epub' and not data.get('path'):
-        # 1. Отменяем старый таймер, если он был
         old_task = data.get('timer_task')
         if old_task and not old_task.done():
             old_task.cancel()
 
-        # 2. Парсим
         meta = await asyncio.to_thread(extract_metadata, path)
         cover = await asyncio.to_thread(extract_cover, path)
-        
-        # 3. Создаем новый таймер
         new_task = asyncio.create_task(check_and_clear(message, state))
         
-        # 4. Сохраняем всё ОДНИМ РАЗОМ
         await state.update_data(
             path=path, 
             name=message.document.file_name, 
             meta=meta, 
             cover=cover, 
             extras=extras, 
-            timer_task=new_task, # Сохраняем ID задачи
-            gl=GL_OPTIONS[0], tr=TR_OPTIONS[2], fl=FL_OPTIONS[2], status=STATUS_OPTIONS[0]
+            timer_task=new_task,
+            gl=GL_OPTIONS[0], 
+            tr=TR_OPTIONS[2], 
+            fl=FL_OPTIONS[2], 
+            status=STATUS_OPTIONS[0]
         )
         await state.set_state(BookForm.choosing_tools)
         
@@ -312,10 +287,10 @@ async def handle_docs(message: types.Message, state: FSMContext):
         await message.answer("✅ EPUB принят. Жду доп. файлы...", reply_markup=get_tools_kb(new_data))
         
     else:
-        # Если это просто доп. файл
         extras.append({"path": path, "name": message.document.file_name})
         await state.update_data(extras=extras)
         await message.answer(f"📎 {message.document.file_name} в очереди.")
+
 
 @dp.callback_query(BookForm.choosing_tools)
 async def callbacks(call: types.CallbackQuery, state: FSMContext):
@@ -324,22 +299,27 @@ async def callbacks(call: types.CallbackQuery, state: FSMContext):
     def get_next(current, options):
         return options[(options.index(current) + 1) % len(options)]
 
-    if call.data == "change_gl": data['gl'] = get_next(data['gl'], GL_OPTIONS)
-    elif call.data == "change_tr": data['tr'] = get_next(data['tr'], TR_OPTIONS)
-    elif call.data == "change_fl": data['fl'] = get_next(data['fl'], FL_OPTIONS)
-    elif call.data == "change_status": data['status'] = get_next(data['status'], STATUS_OPTIONS)
+    if call.data == "change_gl": 
+        data['gl'] = get_next(data['gl'], GL_OPTIONS)
+    elif call.data == "change_tr": 
+        data['tr'] = get_next(data['tr'], TR_OPTIONS)
+    elif call.data == "change_fl": 
+        data['fl'] = get_next(data['fl'], FL_OPTIONS)
+    elif call.data == "change_status": 
+        data['status'] = get_next(data['status'], STATUS_OPTIONS)
     
     elif call.data == "cancel_all":
         task = data.get("timer_task")
-        if task: task.cancel()
+        if task: 
+            task.cancel()
         for p in [data.get('path'), data.get('cover')] + [i['path'] for i in data.get('extras', [])]:
-            if p and os.path.exists(p): os.remove(p)
+            if p and os.path.exists(p): 
+                os.remove(p)
         await state.clear()
         await call.message.edit_text("❌ Отменено.")
         return
 
     elif call.data == "pub_done":
-        # ВЫКЛЮЧАЕМ БУДИЛЬНИК
         task = data.get("timer_task")
         if task:
             task.cancel()
@@ -353,7 +333,6 @@ async def callbacks(call: types.CallbackQuery, state: FSMContext):
                 return
             
             groups = user_data.get('groups')
-            # Если в БД нет username, берем из Telegram
             author_name = user_data.get('username') or f"@{call.from_user.username}"
         except Exception as e:
             logging.error(f"Ошибка БД при публикации: {e}")
@@ -372,7 +351,6 @@ async def callbacks(call: types.CallbackQuery, state: FSMContext):
             chapters = await asyncio.to_thread(count_chapters, data['path'])
             status = data.get('status', "В процессе")
             
-            # Формируем текст поста (один раз для всех групп)
             icons = ["🏴‍☠️", "🇬🇧", "🌐"]
             post_text = ""
             for i, title in enumerate(meta.get('titles', [])):
@@ -380,23 +358,26 @@ async def callbacks(call: types.CallbackQuery, state: FSMContext):
                 post_text += f"{icon} {escape(title)}\n"
             
             post_text += f"\n✍️ Автор: {escape(meta.get('author', '?'))}\n📊 Глав: {escape(str(chapters))}\n📌 Статус: <b>{escape(status)}</b>"
-            if meta.get('tags'): post_text += f"\n\n🏷 {' '.join(meta['tags'])}"
+            if meta.get('tags'): 
+                post_text += f"\n\n🏷 {' '.join(meta['tags'])}"
             
             post_text += f"\n\n📖 <b>Описание:</b>\n<blockquote expandable>{escape(meta.get('desc', 'Описание отсутствует'))}</blockquote>"
-            if meta.get('links'): post_text += f"\n\n🔗 {escape(meta['links'][0])}"
+            if meta.get('links'): 
+                post_text += f"\n\n🔗 {escape(meta['links'][0])}"
             
-            # ДОБАВЛЯЕМ АВТОРА ИЗ БД
             post_text += f"\n\n👤 Опубликовал: {escape(author_name)}"
-
             cap = f"🤖 Глоссарий: {escape(gl)}\n🤖 Перевод: {escape(tr)}\n🧹 Фильтр: {escape(fl)}"
 
             # --- 3. РАССЫЛКА ПО ГРУППАМ ---
             for gid in groups:
                 try:
-                    # Умная конвертация ID (Aiogram иногда требует int для отрицательных ID)
                     chat_id = int(gid) if (isinstance(gid, str) and (gid.isdigit() or (gid.startswith('-') and gid[1:].isdigit()))) else gid
 
-                    topic = await bot.create_forum_topic(chat_id=chat_id, name=title_topic, icon_color=random.choice([0x6FB9F0, 0xFFD67E, 0xCB86DB, 0x8EEE98, 0xFF93B2, 0xFB6F5F]))
+                    topic = await bot.create_forum_topic(
+                        chat_id=chat_id, 
+                        name=title_topic, 
+                        icon_color=random.choice([0x6FB9F0, 0xFFD67E, 0xCB86DB, 0x8EEE98, 0xFF93B2, 0xFB6F5F])
+                    )
                     thread_id = topic.message_thread_id
 
                     if data.get('cover') and os.path.exists(data['cover']):
@@ -411,7 +392,6 @@ async def callbacks(call: types.CallbackQuery, state: FSMContext):
                     success_count += 1
                 except Exception as e:
                     logging.error(f"Ошибка отправки в группу {gid}: {e}")
-                    # Ошибка в одной группе НЕ прерывает весь цикл! Бот пойдет к следующей.
             
             if success_count > 0:
                 await call.message.edit_text(f"✅ Успешно опубликовано в {success_count} групп(ы)!")
@@ -432,6 +412,13 @@ async def callbacks(call: types.CallbackQuery, state: FSMContext):
                     except OSError as e:
                         logging.error(f"Не удалось удалить временный файл {p}: {e}")
             await state.clear()
+            return
+
+    # ОБНОВЛЕНИЕ ДАННЫХ (если нажали кнопку смены инструмента)
+    await state.update_data(data)
+    await call.message.edit_reply_markup(reply_markup=get_tools_kb(data))
+    await call.answer()
+
 
 if __name__ == "__main__":
     from aiogram.webhook.aiohttp_server import SimpleRequestHandler, setup_application
