@@ -10,7 +10,6 @@ from aiogram.fsm.context import FSMContext
 from aiogram.fsm.state import State, StatesGroup
 from aiogram.fsm.storage.memory import MemoryStorage
 from aiogram.types import InlineKeyboardMarkup, InlineKeyboardButton, FSInputFile, LinkPreviewOptions
-from google_db import GoogleSheetsDB
 
 load_dotenv()
 logging.basicConfig(level=logging.INFO)
@@ -19,8 +18,6 @@ TOKEN = os.getenv("BOT_TOKEN")
 GROUP_USERNAME = os.getenv("GROUP_USERNAME")
 ALLOWED_EXTENSIONS = {'.epub', '.pdf', '.txt', '.docx', '.doc', '.fb2', '.mobi'}
 TEMP_DIR = tempfile.gettempdir()
-# Инициализация БД
-db = GoogleSheetsDB(os.getenv("SPREADSHEET_ID"))
 # Списки опций
 GL_OPTIONS = ["Gemini 3.0", "Gemini 3.1", "Gemini 3.5", "DeepSeek V4 Flash"]
 TR_OPTIONS = ["Gemini 3.0", "Gemini 3.1", "Gemini 3.5", "DeepSeek V4 Flash"]
@@ -165,33 +162,7 @@ def count_chapters(epub_path):
 # --- ХЕНДЛЕРЫ ---
 @dp.message(Command("start"))
 async def start(message: types.Message):
-    if message.chat.type == "private":
-        # Проверка прав доступа через Google Таблицу
-        if not await db.check_access(message.from_user.id):
-            return await message.answer("❌ У вас нет доступа к боту. Обратитесь к администратору.")
-        
-        await message.answer("📚 Отправь .epub файл.")
-
-#проверка бд в гугле
-@dp.message(Command("test_db"))
-async def test_db_connection(message: types.Message):
-    # Пытаемся получить данные текущего пользователя из Google Таблицы
-    user_data = await db.get_user(message.from_user.id)
-    
-    if user_data:
-        response = (
-            f"✅ <b>Соединение с БД работает!</b>\n\n"
-            f"🆔 Ваш ID: <code>{message.from_user.id}</code>\n"
-            f"👤 Username в БД: {user_data.get('username')}\n"
-            f"📂 Группы: {', '.join(user_data.get('groups', []))}\n"
-            f"🟢 Статус: {'Активен' if user_data.get('is_active') else 'Отключен'}\n"
-            f"🔢 Строка в таблице: {user_data.get('row_index')}"
-        )
-    else:
-        response = f"❌ <b>Соединение работает</b>, но вашего ID (<code>{message.from_user.id}</code>) нет в таблице."
-        
-    await message.answer(response)
-
+    if message.chat.type == "private": await message.answer("📚 Отправь .epub файл.")
 
 @dp.message(F.document)
 async def handle_docs(message: types.Message, state: FSMContext):
