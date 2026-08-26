@@ -10,6 +10,7 @@ from aiogram.fsm.context import FSMContext
 from aiogram.fsm.state import State, StatesGroup
 from aiogram.fsm.storage.memory import MemoryStorage
 from aiogram.types import InlineKeyboardMarkup, InlineKeyboardButton, FSInputFile, LinkPreviewOptions
+from google_db import GoogleSheetsDB
 
 load_dotenv()
 logging.basicConfig(level=logging.INFO)
@@ -18,6 +19,7 @@ TOKEN = os.getenv("BOT_TOKEN")
 GROUP_USERNAME = os.getenv("GROUP_USERNAME")
 ALLOWED_EXTENSIONS = {'.epub', '.pdf', '.txt', '.docx', '.doc', '.fb2', '.mobi'}
 TEMP_DIR = tempfile.gettempdir()
+db = GoogleSheetsDB(os.getenv("SPREADSHEET_ID"))
 # Списки опций
 GL_OPTIONS = ["Gemini 3.0", "Gemini 3.1", "Gemini 3.5", "DeepSeek V4 Flash"]
 TR_OPTIONS = ["Gemini 3.0", "Gemini 3.1", "Gemini 3.5", "DeepSeek V4 Flash"]
@@ -162,14 +164,25 @@ def count_chapters(epub_path):
 # --- ХЕНДЛЕРЫ ---
 @dp.message(Command("start"))
 async def start(message: types.Message):
-    if message.chat.type == "private": await message.answer("📚 Отправь .epub файл.")
+    if message.chat.type == "private":
+        # Проверка прав доступа через Google Таблицу
+        if not await db.check_access(message.from_user.id):
+            return await message.answer("❌ У вас нет доступа к боту. Обратитесь к администратору.")
+        
+        await message.answer("📚 Отправь .epub файл.")
 
 @dp.message(F.document)
 async def handle_docs(message: types.Message, state: FSMContext):
     if message.chat.type != "private": return
     
+    # === НОВАЯ ПРОВЕРКА БД ===
+    if not await db.check_access(message.from_user.id):
+        return await message.answer("❌ У вас нет доступа к загрузке файлов.")
+    # =========================
+    
     if message.document.file_size > 20 * 1024 * 1024:
         return await message.answer("❌ Файл больше 20 МБ.")
+# ... остальной код функции остается без изменений
 
     ext = os.path.splitext(message.document.file_name or "")[1].lower()
     if ext not in ALLOWED_EXTENSIONS:
