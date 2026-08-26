@@ -71,9 +71,9 @@ def get_presets_keyboard(user_prefs: dict) -> InlineKeyboardMarkup:
     builder = InlineKeyboardBuilder()
     
     categories = {
-        "gl": "📚 Глоссарии",
-        "tr": "🌐 Переводы",
-        "fl": "🧹 Фильтры"
+        "gl": "📚 Глоссарий",
+        "tr": "🌐 Перевод",
+        "fl": "🧹 Фильтр"
     }
     
     for cat_key, cat_name in categories.items():
@@ -243,14 +243,14 @@ async def start(message: types.Message, state: FSMContext):
         return await message.answer(f"❌ Вы заблокированы. Для разблокировки напишите: {admins_text}")
     
     kb = InlineKeyboardMarkup(inline_keyboard=[
-        [InlineKeyboardButton(text="Оставить по умолчанию Риф", callback_data="skip_groups")]
+        [InlineKeyboardButton(text="Оставить по умолчанию РиФ", callback_data="skip_groups")]
     ])
     
     await state.set_state(Registration.waiting_for_groups)
     welcome_text = (
         "👋 <b>Добро пожаловать! Вас нет в базе.</b>\n\n"
-        "По умолчанию бот публикует файлы в группу <b>Риф</b>.\n\n"
-        "👉 Если вы хотите добавить свои группы, отправьте их ID через запятую прямо сейчас (например: <code>@group1, -100123456</code>).\n"
+        "По умолчанию бот публикует файлы в группу <b>РиФ</b>.\n\n"
+        "👉 Если вы хотите добавить свои группы, отправьте их ID через запятую прямо сейчас (например: <code>@group1, -100123456</code>) (не забудьте пригласить бота в группу и дать ему права Администратора).\n"
         "👉 Либо нажмите кнопку ниже, чтобы использовать только группу по умолчанию."
     )
     await message.answer(welcome_text, reply_markup=kb)
@@ -564,8 +564,8 @@ async def help_user(message: types.Message):
     help_text = (
         "📖 <b>Справка по использованию бота</b>\n\n"
         "<b>1. Загрузка и публикация книг</b>\n"
-        "• Отправьте боту файл <code>.epub</code> (макс. 20 МБ).\n"
-        "• Бот извлечет метаданные, обложку и предложит выбрать параметры с помощью кнопок.\n"
+        "• Отправьте боту файл (поддерживаются форматы: <code>.epub</code>, <code>.pdf</code>, <code>.txt</code>, <code>.docx</code>, <code>.doc</code>, <code>.fb2</code>, <code>.mobi</code>, макс. 20 МБ).\n"        "• Бот извлечет метаданные, обложку и предложит выбрать параметры с помощью кнопок.\n"
+        "• Бот извлечет метаданные и обложку. <b>Для переводчиков бот предложит выбрать индивидуальные параметры и инструменты</b> с помощью кнопок.\n"
         "• По готовности нажмите «✅ ПУБЛИКАЦИЯ». Пост будет отправлен во все ваши настроенные группы.\n\n"
         "<b>2. Настройка групп (/groups)</b>\n"
         "• Используйте команду /groups для изменения списка целевых чатов.\n"
