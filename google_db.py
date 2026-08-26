@@ -51,10 +51,9 @@ class GoogleSheetsDB:
             await self._fetch_all_users()
 
     async def _fetch_all_users(self):
-        """Считывает всех пользователей из таблицы в локальный кэш (A:E)."""
+        """Считывает всех пользователей из таблицы в локальный кэш (A:F), включая JSON-профиль."""
         await self._init_sheet()
         
-        # Прямой асинхронный вызов gspread_asyncio (без run_in_executor)
         try:
             records = await self.sheet.get_all_values()
         except Exception as e:
@@ -63,7 +62,6 @@ class GoogleSheetsDB:
 
         new_cache = {}
         
-        # Пропускаем первую строку (заголовки)
         for row in records[1:]:
             if not row or not row[0].strip():
                 continue
@@ -76,11 +74,19 @@ class GoogleSheetsDB:
                 is_active = str(row[3]).strip().upper() == 'TRUE' if len(row) > 3 else False
                 is_admin = str(row[4]).strip().upper() == 'TRUE' if len(row) > 4 else False
                 
+                # Парсинг 6-й колонки (F) с JSON-настройками
+                profile_json_str = row[5].strip() if len(row) > 5 else "{}"
+                try:
+                    profile_data = json.loads(profile_json_str) if profile_json_str else {}
+                except json.JSONDecodeError:
+                    profile_data = {}
+                
                 new_cache[user_id] = {
                     'username': username,
                     'groups': groups,
                     'is_active': is_active,
-                    'is_admin': is_admin
+                    'is_admin': is_admin,
+                    'profile': profile_data
                 }
             except ValueError:
                 continue
@@ -99,24 +105,26 @@ class GoogleSheetsDB:
         return bool(user and user.get('is_active'))
 
     async def update_user_groups(self, user_id: int, username: str, groups: list, is_active: bool = True):
-        """Добавляет или обновляет пользователя, надежно сохраняя его права и статус."""
+        """Добавляет или обновляет пользователя, надежно сохраняя его права, статус и профиль."""
         await self._ensure_cache()
         groups_str = ", ".join(groups)
         
-        # Защита от саморазбана: если юзер есть в базе, берем его текущие статусы
+        # Извлекаем текущие данные, чтобы не затереть профиль и админские права
         user = self._cache.get(user_id)
         if user:
             is_admin = user.get('is_admin', False)
-            # Игнорируем переданный is_active=True, если пользователь забанен
             is_active = user.get('is_active', is_active)
+            profile = user.get('profile', {})
         else:
             is_admin = False
+            profile = {}
         
         row_data = [str(user_id), username, groups_str, str(is_active).upper(), str(is_admin).upper()]
         
         try:
             cell = await self.sheet.find(str(user_id))
             if cell:
+                # Обновляем только диапазон A:E, колонка F (настройки) остается нетронутой
                 range_name = f"A{cell.row}:E{cell.row}"
                 await self.sheet.update(range_name, [row_data])
             else:
@@ -126,7 +134,8 @@ class GoogleSheetsDB:
                 'username': username,
                 'groups': groups,
                 'is_active': is_active,
-                'is_admin': is_admin
+                'is_admin': is_admin,
+                'profile': profile
             }
         except Exception as e:
             logging.error(f"Ошибка записи пользователя {user_id} в БД: {e}")
@@ -175,3 +184,25 @@ class GoogleSheetsDB:
             logging.error(f"Ошибка при бане пользователя {user_id}: {e}")
             
         return False
+
+
+    async def update_user_profile(self, user_id: int, profile_dict: dict):
+        """Точечно сохраняет JSON-профиль пользователя в колонку F."""
+        await self._ensure_cache()
+        
+        if user_id not in self._cache:
+            logging.warning(f"Попытка обновить профиль несуществующего юзера {user_id}")
+            return
+            
+        profile_str = json.dumps(profile_dict, ensure_ascii=False)
+        
+        try:
+            cell = await self.sheet.find(str(user_id))
+            if cell:
+                # 6-я колонка (F)
+                await self.sheet.update_cell(cell.row, 6, profile_str)
+                self._cache[user_id]['profile'] = profile_dict
+        except Exception as e:
+            logging.error(f"Ошибка записи профиля для {user_id}: {e}")
+
+
