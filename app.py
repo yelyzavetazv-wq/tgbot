@@ -343,92 +343,95 @@ async def callbacks(call: types.CallbackQuery, state: FSMContext):
         task = data.get("timer_task")
         if task:
             task.cancel()
-        await call.message.edit_text("⏳ Публикация началась... подожди немного.")
+        await call.message.edit_text("⏳ Читаю базу данных и начинаю публикацию...")
 
-
-        # --- ТЕСТОВЫЙ БЛОК БД ---
+        # --- 1. ЗАПРОС К БД ---
         try:
             user_data = await db.get_user(call.from_user.id)
-            if not user_data:
-                await call.message.edit_text("❌ Ошибка: Вы не найдены в базе данных.")
+            if not user_data or not user_data.get('groups'):
+                await call.message.edit_text("❌ Ошибка: У вас не настроены группы для публикации.")
                 return
-
+            
             groups = user_data.get('groups')
-            test_msg = (
-                f"✅ Таблица прочитана успешно!\n"
-                f"👤 Имя: {user_data.get('username')}\n"
-                f"📁 Группы: {groups}\n"
-                f"🟢 Активен: {user_data.get('is_active')}"
-            )
-            await call.message.edit_text(test_msg)
+            # Если в БД нет username, берем из Telegram
+            author_name = user_data.get('username') or f"@{call.from_user.username}"
         except Exception as e:
-            logging.error(f"Ошибка парсинга БД при публикации: {e}")
-            await call.message.edit_text(f"❌ Ошибка БД: {e}")
-        
-        return # ПРИНУДИТЕЛЬНЫЙ СТОП ДЛЯ ТЕСТА
-        # ------------------------
+            logging.error(f"Ошибка БД при публикации: {e}")
+            await call.message.edit_text("❌ Ошибка при чтении базы данных.")
+            return
 
-
-        
+        # --- 2. ПОДГОТОВКА ПОСТА ---
+        success_count = 0
         try:
-            # 1. СОЗДАЕМ ТЕМЫ
             meta = data['meta']
             title_topic = meta.get('titles', ['Новая книга'])[0][:128]
             
-            for gid in [GROUP_USERNAME, os.getenv("GROUP_USERNAME_2")]:
-                if not gid: continue
-                topic = await bot.create_forum_topic(chat_id=gid, name=title_topic, icon_color=random.choice([0x6FB9F0, 0xFFD67E, 0xCB86DB, 0x8EEE98, 0xFF93B2, 0xFB6F5F]))
-                thread_id = topic.message_thread_id
-
-                # 2. ПУБЛИКАЦИЯ В ТЕМУ
-                gl = data.get('gl', GL_OPTIONS[0])
-                tr = data.get('tr', TR_OPTIONS[0])
-                fl = data.get('fl', FL_OPTIONS[0])
-                
-                icons = ["🏴‍☠️", "🇬🇧", "🌐"]
-                post_text = ""
-                for i, title in enumerate(meta.get('titles', [])):
-                    icon = icons[i] if i < len(icons) else "🔹"
-                    post_text += f"{icon} {escape(title)}\n"
-                
-                chapters = await asyncio.to_thread(count_chapters, data['path'])
-                status = data.get('status', "В процессе")
-               
-                post_text += f"\n✍️ Автор: {escape(meta.get('author', '?'))}\n📊 Глав: {escape(str(chapters))}\n📌 Статус: <b>{escape(status)}</b>"
-                if meta.get('tags'): post_text += f"\n\n🏷 {' '.join(meta['tags'])}"
-             
-                post_text += f"\n\n📖 <b>Описание:</b>\n<blockquote expandable>{escape(meta.get('desc', 'Описание отсутствует'))}</blockquote>"
-                if meta.get('links'): post_text += f"\n\n🔗 {escape(meta['links'][0])}"
-                
-                if data.get('cover') and os.path.exists(data['cover']):
-                    await bot.send_photo(gid, photo=FSInputFile(data['cover']), message_thread_id=thread_id)
-                
-                await bot.send_message(gid, post_text, message_thread_id=thread_id, link_preview_options=LinkPreviewOptions(is_disabled=True))
-                
-                cap = f"🤖 Глоссарий: {escape(gl)}\n🤖 Перевод: {escape(tr)}\n🧹 Фильтр: {escape(fl)}"
-                
-                await bot.send_document(gid, document=FSInputFile(data['path'], filename=data['name']), caption=cap, message_thread_id=thread_id)
-                
-                for item in data.get('extras', []):
-                    await bot.send_document(gid, document=FSInputFile(item['path'], filename=item['name']), message_thread_id=thread_id)
-                
-            await call.message.edit_text("✅ Опубликовано в обе темы!")
+            gl = data.get('gl', GL_OPTIONS[0])
+            tr = data.get('tr', TR_OPTIONS[0])
+            fl = data.get('fl', FL_OPTIONS[0])
+            chapters = await asyncio.to_thread(count_chapters, data['path'])
+            status = data.get('status', "В процессе")
             
+            # Формируем текст поста (один раз для всех групп)
+            icons = ["🏴‍☠️", "🇬🇧", "🌐"]
+            post_text = ""
+            for i, title in enumerate(meta.get('titles', [])):
+                icon = icons[i] if i < len(icons) else "🔹"
+                post_text += f"{icon} {escape(title)}\n"
+            
+            post_text += f"\n✍️ Автор: {escape(meta.get('author', '?'))}\n📊 Глав: {escape(str(chapters))}\n📌 Статус: <b>{escape(status)}</b>"
+            if meta.get('tags'): post_text += f"\n\n🏷 {' '.join(meta['tags'])}"
+            
+            post_text += f"\n\n📖 <b>Описание:</b>\n<blockquote expandable>{escape(meta.get('desc', 'Описание отсутствует'))}</blockquote>"
+            if meta.get('links'): post_text += f"\n\n🔗 {escape(meta['links'][0])}"
+            
+            # ДОБАВЛЯЕМ АВТОРА ИЗ БД
+            post_text += f"\n\n👤 Опубликовал: {escape(author_name)}"
+
+            cap = f"🤖 Глоссарий: {escape(gl)}\n🤖 Перевод: {escape(tr)}\n🧹 Фильтр: {escape(fl)}"
+
+            # --- 3. РАССЫЛКА ПО ГРУППАМ ---
+            for gid in groups:
+                try:
+                    # Умная конвертация ID (Aiogram иногда требует int для отрицательных ID)
+                    chat_id = int(gid) if (isinstance(gid, str) and (gid.isdigit() or (gid.startswith('-') and gid[1:].isdigit()))) else gid
+
+                    topic = await bot.create_forum_topic(chat_id=chat_id, name=title_topic, icon_color=random.choice([0x6FB9F0, 0xFFD67E, 0xCB86DB, 0x8EEE98, 0xFF93B2, 0xFB6F5F]))
+                    thread_id = topic.message_thread_id
+
+                    if data.get('cover') and os.path.exists(data['cover']):
+                        await bot.send_photo(chat_id, photo=FSInputFile(data['cover']), message_thread_id=thread_id)
+                    
+                    await bot.send_message(chat_id, post_text, message_thread_id=thread_id, link_preview_options=LinkPreviewOptions(is_disabled=True))
+                    await bot.send_document(chat_id, document=FSInputFile(data['path'], filename=data['name']), caption=cap, message_thread_id=thread_id)
+                    
+                    for item in data.get('extras', []):
+                        await bot.send_document(chat_id, document=FSInputFile(item['path'], filename=item['name']), message_thread_id=thread_id)
+                        
+                    success_count += 1
+                except Exception as e:
+                    logging.error(f"Ошибка отправки в группу {gid}: {e}")
+                    # Ошибка в одной группе НЕ прерывает весь цикл! Бот пойдет к следующей.
+            
+            if success_count > 0:
+                await call.message.edit_text(f"✅ Успешно опубликовано в {success_count} групп(ы)!")
+            else:
+                await call.message.edit_text("❌ Не удалось опубликовать ни в одну группу. Проверьте права бота.")
+                
         except Exception as e:
-            logging.error(f"Ошибка при публикации: {e}")
-            await call.answer("❌ Ошибка публикации", show_alert=True)
-            return
+            logging.error(f"Критическая ошибка при публикации: {e}")
+            await call.answer("❌ Произошла ошибка публикации", show_alert=True)
+            
         finally:
+            # --- 4. БЕЗОПАСНАЯ ОЧИСТКА ---
             all_files = [data.get('path'), data.get('cover')] + [i['path'] for i in data.get('extras', [])]
             for p in all_files:
-                if p and os.path.exists(p): os.remove(p)
+                if p and os.path.exists(p):
+                    try:
+                        os.remove(p)
+                    except OSError as e:
+                        logging.error(f"Не удалось удалить временный файл {p}: {e}")
             await state.clear()
-            return
-
-    # ОБНОВЛЕНИЕ ДАННЫХ (если нажали кнопку смены инструмента)
-    await state.update_data(data)
-    await call.message.edit_reply_markup(reply_markup=get_tools_kb(data))
-    await call.answer()
 
 if __name__ == "__main__":
     from aiogram.webhook.aiohttp_server import SimpleRequestHandler, setup_application
