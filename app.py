@@ -3,15 +3,17 @@ from html import escape, unescape
 from bs4 import BeautifulSoup
 from dotenv import load_dotenv
 from aiohttp import web
+
 from aiogram import Bot, Dispatcher, F, types
 from aiogram.client.default import DefaultBotProperties
-from aiogram.filters import Command
+from aiogram.filters import Command, Filter
 from aiogram.fsm.context import FSMContext
 from aiogram.fsm.state import State, StatesGroup
 from aiogram.fsm.storage.memory import MemoryStorage
+from aiogram.utils.keyboard import InlineKeyboardBuilder
 from aiogram.types import InlineKeyboardMarkup, InlineKeyboardButton, FSInputFile, LinkPreviewOptions
+
 from google_db import GoogleSheetsDB
-from aiogram.filters import Command, Filter
 
 load_dotenv()
 logging.basicConfig(level=logging.INFO)
@@ -21,21 +23,17 @@ ALLOWED_EXTENSIONS = {'.epub', '.pdf', '.txt', '.docx', '.doc', '.fb2', '.mobi'}
 TEMP_DIR = tempfile.gettempdir()
 db = GoogleSheetsDB(os.getenv("SPREADSHEET_ID"))
 
-# Списки опций
-GL_OPTIONS = ["Gemini 3.0", "Gemini 3.1", "Gemini 3.5", "DeepSeek V4 Flash"]
-TR_OPTIONS = ["Gemini 3.0", "Gemini 3.1", "Gemini 3.5", "DeepSeek V4 Flash"]
-FL_OPTIONS = ["ChatGpt", "DeepSeek", "Нет"]
-STATUS_OPTIONS = ["В процессе", "Фулл", "Брошен"]
-
-bot = Bot(token=TOKEN, default=DefaultBotProperties(parse_mode="HTML"))
-dp = Dispatcher(storage=MemoryStorage())
-
+# ==========================================
+# 1. КЛАССЫ СОСТОЯНИЙ И ФИЛЬТРЫ
+# ==========================================
+class Registration(StatesGroup):
+    waiting_for_groups = State()
+    waiting_for_role = State()
+    waiting_for_presets = State()
+    waiting_for_custom = State()
 
 class BookForm(StatesGroup):
     choosing_tools = State()
-
-class Registration(StatesGroup):
-    waiting_for_groups = State()
 
 class IsAdmin(Filter):
     """Кастомный фильтр для проверки прав администратора через БД."""
@@ -43,17 +41,71 @@ class IsAdmin(Filter):
         user_data = await db.get_user(message.from_user.id)
         return bool(user_data and user_data.get('is_admin'))
 
+# ==========================================
+# 2. ИНИЦИАЛИЗАЦИЯ И КОНСТАНТЫ
+# ==========================================
+bot = Bot(token=TOKEN, default=DefaultBotProperties(parse_mode="HTML"))
+dp = Dispatcher(storage=MemoryStorage())
+
+STATUS_OPTIONS = ["В процессе", "Фулл", "Брошен"]
+
+# Базовые пресеты для регистрации переводчиков
+DEFAULT_PRESETS = {
+    "gl": ["Gemini 3.5", "ChatGPT 4", "DeepL", "Claude 3"],
+    "tr": ["Ru", "En"],
+    "fl": ["Стандартный"]
+}
+
+# ==========================================
+# 3. ВСПОМОГАТЕЛЬНЫЕ ФУНКЦИИ UI
+# ==========================================
+def get_presets_keyboard(user_prefs: dict) -> InlineKeyboardMarkup:
+    """Генерирует клавиатуру с чекбоксами для всех категорий настроек."""
+    builder = InlineKeyboardBuilder()
+    
+    categories = {
+        "gl": "📚 Глоссарии",
+        "tr": "🌐 Переводы",
+        "fl": "🧹 Фильтры"
+    }
+    
+    for cat_key, cat_name in categories.items():
+        builder.row(InlineKeyboardButton(text=f"--- {cat_name} ---", callback_data="ignore"))
+        
+        # Объединяем базовые пресеты с кастомными (без дубликатов)
+        user_custom_items = user_prefs.get(cat_key, [])
+        all_options = list(dict.fromkeys(DEFAULT_PRESETS[cat_key] + user_custom_items))
+        
+        for item in all_options:
+            mark = "✅" if item in user_prefs.get(cat_key, []) else "❌"
+            builder.row(InlineKeyboardButton(text=f"{mark} {item}", callback_data=f"toggle_{cat_key}_{item}"))
+            
+        builder.row(InlineKeyboardButton(text="➕ Добавить свое", callback_data=f"add_custom_{cat_key}"))
+
+    builder.row(InlineKeyboardButton(text="💾 СОХРАНИТЬ И ЗАВЕРШИТЬ", callback_data="finish_presets"))
+    return builder.as_markup()
+
+def get_tools_kb(data: dict, is_translator: bool) -> InlineKeyboardMarkup:
+    """Динамическая клавиатура в зависимости от роли и настроек юзера."""
+    builder = InlineKeyboardBuilder()
+    
+    if is_translator:
+        builder.row(InlineKeyboardButton(text=f"📖 Глоссарий: {data.get('gl', 'Нет')}", callback_data="change_gl"))
+        builder.row(InlineKeyboardButton(text=f"🌐 Перевод: {data.get('tr', 'Нет')}", callback_data="change_tr"))
+        builder.row(InlineKeyboardButton(text=f"🧹 Фильтр: {data.get('fl', 'Нет')}", callback_data="change_fl"))
+        builder.row(InlineKeyboardButton(text=f"📌 Статус: {data.get('status', 'В процессе')}", callback_data="change_status"))
+        
+    builder.row(InlineKeyboardButton(text="✅ ПУБЛИКАЦИЯ", callback_data="pub_done"))
+    builder.row(InlineKeyboardButton(text="❌ ОТМЕНА", callback_data="cancel_all"))
+    return builder.as_markup()
 
 async def check_and_clear(message: types.Message, state: FSMContext):
     try:
         await asyncio.sleep(30)  # Ждем 30 секунд
     except asyncio.CancelledError:
-        # Задача была отменена (пользователь нажал "ПУБЛИКАЦИЯ" или "ОТМЕНА")
         return 
 
-    # Если дошли сюда, значит время вышло
     data = await state.get_data()
-    # Удаляем файлы
     files_to_remove = [data.get('path'), data.get('cover')] + [i['path'] for i in data.get('extras', [])]
     for p in files_to_remove:
         if p and os.path.exists(p): 
@@ -65,20 +117,9 @@ async def check_and_clear(message: types.Message, state: FSMContext):
     await state.clear()
     await message.answer("❌ Время вышло, EPUB не получен. Все файлы удалены.")
 
-
-# --- ИНСТРУМЕНТЫ И КНОПКИ ---
-def get_tools_kb(data):
-    return InlineKeyboardMarkup(inline_keyboard=[
-        [InlineKeyboardButton(text=f"📖 Глоссарий: {data['gl']}", callback_data="change_gl")],
-        [InlineKeyboardButton(text=f"🌐 Перевод: {data['tr']}", callback_data="change_tr")],
-        [InlineKeyboardButton(text=f"🧹 Фильтр: {data['fl']}", callback_data="change_fl")],
-        [InlineKeyboardButton(text=f"📌 Статус: {data['status']}", callback_data="change_status")],
-        [InlineKeyboardButton(text="✅ ПУБЛИКАЦИЯ", callback_data="pub_done")],
-        [InlineKeyboardButton(text="❌ ОТМЕНА", callback_data="cancel_all")]
-    ])
-
-
-# --- ПАРСИНГ ---
+# ==========================================
+# 4. ПАРСЕРЫ (ОСТАВЛЕНЫ БЕЗ ИЗМЕНЕНИЙ)
+# ==========================================
 def extract_cover(epub_path):
     try:
         with zipfile.ZipFile(epub_path, 'r') as z:
@@ -106,7 +147,6 @@ def extract_cover(epub_path):
     except: 
         pass
     return None
-
 
 def extract_metadata(epub_path):
     meta = {"titles": [], "author": "?", "tags": [], "links": [], "desc": "Описание отсутствует"}
@@ -145,7 +185,6 @@ def extract_metadata(epub_path):
         pass
     return meta
 
-
 def count_chapters(epub_path):
     try:
         with zipfile.ZipFile(epub_path, 'r') as z:
@@ -166,8 +205,9 @@ def count_chapters(epub_path):
         logging.error(f"Ошибка подсчета: {e}")
     return "?"
 
-
-# --- ХЕНДЛЕРЫ ---
+# ==========================================
+# 5. ХЕНДЛЕРЫ
+# ==========================================
 @dp.message(Command("start"))
 async def start(message: types.Message, state: FSMContext):
     if message.chat.type != "private": 
@@ -175,17 +215,14 @@ async def start(message: types.Message, state: FSMContext):
         
     user_data = await db.get_user(message.from_user.id)
     
-    # Состояние 1: Пользователь найден и Активен
     if user_data and user_data.get('is_active'):
         return await message.answer("📚 Авторизация подтверждена. Отправь .epub файл.")
         
-    # Состояние 2: Пользователь найден, но Забанен (is_active == False)
     if user_data and not user_data.get('is_active'):
         admins = await db.get_all_admins()
         admins_text = ", ".join(admins) if admins else "администраторам"
         return await message.answer(f"❌ Вы заблокированы. Для разблокировки напишите: {admins_text}")
     
-    # Состояние 3: Пользователя нет в базе (Новый)
     kb = InlineKeyboardMarkup(inline_keyboard=[
         [InlineKeyboardButton(text="Оставить по умолчанию Риф", callback_data="skip_groups")]
     ])
@@ -199,15 +236,24 @@ async def start(message: types.Message, state: FSMContext):
     )
     await message.answer(welcome_text, reply_markup=kb)
 
+async def ask_for_role(message, state: FSMContext):
+    """Вызов меню выбора роли после сохранения групп."""
+    await state.set_state(Registration.waiting_for_role)
+    kb = InlineKeyboardMarkup(inline_keyboard=[
+        [InlineKeyboardButton(text="✍️ Я переводчик (настроить меню)", callback_data="role_translator")],
+        [InlineKeyboardButton(text="📖 Просто публикую (без настроек)", callback_data="role_publisher")]
+    ])
+    await message.answer("Отлично! Теперь укажите вашу роль в проекте:", reply_markup=kb)
 
 @dp.callback_query(Registration.waiting_for_groups, F.data == "skip_groups")
 async def reg_skip_groups(call: types.CallbackQuery, state: FSMContext):
     user = call.from_user
     username = f"@{user.username}" if user.username else user.first_name
     await db.update_user_groups(user.id, username, ["-1003960669210"], True)
-    await state.clear()
-    await call.message.edit_text("✅ <b>Авторизация успешна!</b>\nНастроена группа по умолчанию (Риф).\n\n📚 Отправьте .epub файл.")
-
+    
+    await state.update_data(groups=["-1003960669210"])
+    await ask_for_role(call.message, state)
+    await call.answer()
 
 @dp.message(Registration.waiting_for_groups, F.text)
 async def reg_process_groups(message: types.Message, state: FSMContext):
@@ -217,14 +263,94 @@ async def reg_process_groups(message: types.Message, state: FSMContext):
     user_groups.append("-1003960669210")
     unique_groups = list(dict.fromkeys(user_groups))
     await db.update_user_groups(user.id, username, unique_groups, True)
+    
+    await state.update_data(groups=unique_groups)
+    await ask_for_role(message, state)
+
+@dp.callback_query(Registration.waiting_for_role, F.data == "role_publisher")
+async def process_role_publisher(call: types.CallbackQuery, state: FSMContext):
+    """Ветка обычного пользователя: сохраняем профиль и завершаем."""
+    user_id = call.from_user.id
+    
+    await db.update_user_profile(user_id, {"is_translator": False})
+    
     await state.clear()
-    groups_str = ", ".join(unique_groups)
-    await message.answer(
-        f"✅ <b>Авторизация успешна!</b>\n"
-        f"Сохранены группы: <code>{groups_str}</code>\n\n"
-        f"📚 Отправьте .epub файл."
+    await call.message.edit_text("✅ Регистрация завершена! Просто отправьте мне .epub файл для публикации.")
+
+@dp.callback_query(Registration.waiting_for_role, F.data == "role_translator")
+async def process_role_translator(call: types.CallbackQuery, state: FSMContext):
+    """Ветка переводчика: инициализируем профиль и показываем меню."""
+    initial_prefs = {"is_translator": True, "gl": [], "tr": [], "fl": [], "status": STATUS_OPTIONS}
+    await state.update_data(profile=initial_prefs)
+    
+    await state.set_state(Registration.waiting_for_presets)
+    await call.message.edit_text(
+        "⚙️ <b>Настройка личного меню</b>\n\n"
+        "Выберите инструменты, которые вы используете. Они будут закреплены за вашими кнопками при публикации:",
+        reply_markup=get_presets_keyboard(initial_prefs)
     )
 
+@dp.callback_query(Registration.waiting_for_presets, F.data.startswith("toggle_"))
+async def toggle_preset(call: types.CallbackQuery, state: FSMContext):
+    """Ставит/снимает галочку для любой категории."""
+    _, category, item = call.data.split("_", 2)
+    data = await state.get_data()
+    profile = data.get("profile", {})
+    
+    if item in profile.get(category, []):
+        profile[category].remove(item)
+    else:
+        profile.setdefault(category, []).append(item)
+        
+    await state.update_data(profile=profile)
+    await call.message.edit_reply_markup(reply_markup=get_presets_keyboard(profile))
+
+@dp.callback_query(Registration.waiting_for_presets, F.data.startswith("add_custom_"))
+async def add_custom_item(call: types.CallbackQuery, state: FSMContext):
+    """Режим ожидания текста для новой кастомной настройки."""
+    category = call.data.split("_")[2]  # Получаем gl, tr или fl
+    await state.update_data(custom_category=category)
+    await state.set_state(Registration.waiting_for_custom)
+    
+    cat_names = {"gl": "глоссария", "tr": "перевода", "fl": "фильтра"}
+    await call.message.edit_text(
+        f"✍️ <b>Добавление своего {cat_names.get(category, 'инструмента')}</b>\n\n"
+        "Напишите название в одном сообщении:"
+    )
+
+@dp.message(Registration.waiting_for_custom, F.text)
+async def process_custom_item(message: types.Message, state: FSMContext):
+    """Добавляет текст в выбранную категорию JSON и возвращает меню."""
+    data = await state.get_data()
+    profile = data.get("profile", {})
+    category = data.get("custom_category", "gl")
+    custom_item = message.text.strip()
+    
+    if category not in profile:
+        profile[category] = []
+    
+    if custom_item not in profile[category]:
+        profile[category].append(custom_item)
+        
+    await state.update_data(profile=profile)
+    await state.set_state(Registration.waiting_for_presets)
+    await message.answer(
+        "✅ Успешно добавлено! Выберите инструменты:",
+        reply_markup=get_presets_keyboard(profile)
+    )
+
+@dp.callback_query(Registration.waiting_for_presets, F.data == "finish_presets")
+async def finish_presets(call: types.CallbackQuery, state: FSMContext):
+    """Финальное сохранение профиля переводчика в БД."""
+    data = await state.get_data()
+    profile = data.get("profile", {})
+    
+    await db.update_user_profile(call.from_user.id, profile)
+    await state.clear()
+    await call.message.edit_text(
+        "✅ <b>Настройки успешно сохранены!</b>\n\n"
+        "Теперь просто отправьте мне <code>.epub</code> файл для начала работы."
+    )
 
 @dp.message(Command("groups"))
 async def change_groups(message: types.Message, state: FSMContext):
@@ -249,12 +375,10 @@ async def change_groups(message: types.Message, state: FSMContext):
         reply_markup=kb
     )
 
-
 @dp.callback_query(Registration.waiting_for_groups, F.data == "cancel_group_change")
 async def cancel_group_change(call: types.CallbackQuery, state: FSMContext):
     await state.clear()
     await call.message.edit_text("✅ Изменение групп отменено. Оставлен прежний список.")
-
 
 @dp.message(Command("ban"), IsAdmin())
 async def ban_user(message: types.Message):
@@ -328,7 +452,6 @@ async def help_admin(message: types.Message):
 @dp.message(Command("help"))
 async def help_user(message: types.Message):
     """Базовая справка для обычных пользователей."""
-    # Защита: забаненные пользователи не должны получать справку
     if not await db.check_access(message.from_user.id):
         return
         
@@ -345,13 +468,13 @@ async def help_user(message: types.Message):
     )
     await message.answer(help_text)
 
-
 @dp.message(F.document)
 async def handle_docs(message: types.Message, state: FSMContext):
     if message.chat.type != "private": 
         return
     
-    if not await db.check_access(message.from_user.id):
+    user_data = await db.get_user(message.from_user.id)
+    if not user_data or not user_data.get('is_active'):
         return await message.answer("❌ У вас нет доступа к загрузке файлов.")
     
     if message.document.file_size > 20 * 1024 * 1024:
@@ -376,6 +499,16 @@ async def handle_docs(message: types.Message, state: FSMContext):
         cover = await asyncio.to_thread(extract_cover, path)
         new_task = asyncio.create_task(check_and_clear(message, state))
         
+        # Загрузка персонального профиля
+        profile = user_data.get('profile', {})
+        is_translator = profile.get('is_translator', False)
+        
+        # Получаем списки опций из профиля (или дефолт, если пусто)
+        user_gl_opts = profile.get("gl", ["Нет"]) if profile.get("gl") else ["Нет"]
+        user_tr_opts = profile.get("tr", ["Нет"]) if profile.get("tr") else ["Нет"]
+        user_fl_opts = profile.get("fl", ["Нет"]) if profile.get("fl") else ["Нет"]
+        user_status_opts = profile.get("status", STATUS_OPTIONS) if profile.get("status") else STATUS_OPTIONS
+
         await state.update_data(
             path=path, 
             name=message.document.file_name, 
@@ -383,80 +516,75 @@ async def handle_docs(message: types.Message, state: FSMContext):
             cover=cover, 
             extras=extras, 
             timer_task=new_task,
-            gl=GL_OPTIONS[0], 
-            tr=TR_OPTIONS[2], 
-            fl=FL_OPTIONS[2], 
-            status=STATUS_OPTIONS[0]
+            is_translator=is_translator,
+            profile=profile,
+            gl=user_gl_opts[0], 
+            tr=user_tr_opts[0], 
+            fl=user_fl_opts[0], 
+            status=user_status_opts[0]
         )
         await state.set_state(BookForm.choosing_tools)
-        
         new_data = await state.get_data()
-        await message.answer("✅ EPUB принят. Жду доп. файлы...", reply_markup=get_tools_kb(new_data))
+        await message.answer("✅ EPUB принят. Жду доп. файлы...", reply_markup=get_tools_kb(new_data, is_translator))
         
     else:
         extras.append({"path": path, "name": message.document.file_name})
         await state.update_data(extras=extras)
         await message.answer(f"📎 {message.document.file_name} в очереди.")
 
-
 @dp.callback_query(BookForm.choosing_tools)
 async def callbacks(call: types.CallbackQuery, state: FSMContext):
     if not await db.check_access(call.from_user.id):
         return await call.answer("❌ Вы заблокированы. Действие отменено.", show_alert=True)
+    
     data = await state.get_data()
+    profile = data.get('profile', {})
+    is_translator = data.get('is_translator', False)
     
     def get_next(current, options):
-        return options[(options.index(current) + 1) % len(options)]
+        if not options: return "Нет"
+        try: return options[(options.index(current) + 1) % len(options)]
+        except ValueError: return options[0]
 
     if call.data == "change_gl": 
-        data['gl'] = get_next(data['gl'], GL_OPTIONS)
+        opts = profile.get("gl", ["Нет"]) if profile.get("gl") else ["Нет"]
+        data['gl'] = get_next(data.get('gl'), opts)
     elif call.data == "change_tr": 
-        data['tr'] = get_next(data['tr'], TR_OPTIONS)
+        opts = profile.get("tr", ["Нет"]) if profile.get("tr") else ["Нет"]
+        data['tr'] = get_next(data.get('tr'), opts)
     elif call.data == "change_fl": 
-        data['fl'] = get_next(data['fl'], FL_OPTIONS)
+        opts = profile.get("fl", ["Нет"]) if profile.get("fl") else ["Нет"]
+        data['fl'] = get_next(data.get('fl'), opts)
     elif call.data == "change_status": 
-        data['status'] = get_next(data['status'], STATUS_OPTIONS)
+        opts = profile.get("status", STATUS_OPTIONS) if profile.get("status") else STATUS_OPTIONS
+        data['status'] = get_next(data.get('status'), opts)
     
     elif call.data == "cancel_all":
         task = data.get("timer_task")
-        if task: 
-            task.cancel()
+        if task: task.cancel()
         for p in [data.get('path'), data.get('cover')] + [i['path'] for i in data.get('extras', [])]:
-            if p and os.path.exists(p): 
-                os.remove(p)
+            if p and os.path.exists(p): os.remove(p)
         await state.clear()
-        await call.message.edit_text("❌ Отменено.")
-        return
+        return await call.message.edit_text("❌ Отменено.")
 
     elif call.data == "pub_done":
         task = data.get("timer_task")
-        if task:
-            task.cancel()
+        if task: task.cancel()
         await call.message.edit_text("⏳ Читаю базу данных и начинаю публикацию...")
 
-        # --- 1. ЗАПРОС К БД ---
         try:
             user_data = await db.get_user(call.from_user.id)
-            if not user_data or not user_data.get('groups'):
-                await call.message.edit_text("❌ Ошибка: У вас не настроены группы для публикации.")
-                return
-            
             groups = user_data.get('groups')
+            if not groups: return await call.message.edit_text("❌ Ошибка: У вас не настроены группы.")
             author_name = user_data.get('username') or f"@{call.from_user.username}"
         except Exception as e:
             logging.error(f"Ошибка БД при публикации: {e}")
-            await call.message.edit_text("❌ Ошибка при чтении базы данных.")
-            return
+            return await call.message.edit_text("❌ Ошибка при чтении базы данных.")
 
-        # --- 2. ПОДГОТОВКА ПОСТА ---
         success_count = 0
         try:
             meta = data['meta']
             title_topic = meta.get('titles', ['Новая книга'])[0][:128]
-            
-            gl = data.get('gl', GL_OPTIONS[0])
-            tr = data.get('tr', TR_OPTIONS[0])
-            fl = data.get('fl', FL_OPTIONS[0])
             chapters = await asyncio.to_thread(count_chapters, data['path'])
             status = data.get('status', "В процессе")
             
@@ -466,34 +594,33 @@ async def callbacks(call: types.CallbackQuery, state: FSMContext):
                 icon = icons[i] if i < len(icons) else "🔹"
                 post_text += f"{icon} {escape(title)}\n"
             
-            post_text += f"\n✍️ Автор: {escape(meta.get('author', '?'))}\n📊 Глав: {escape(str(chapters))}\n📌 Статус: <b>{escape(status)}</b>"
-            if meta.get('tags'): 
-                post_text += f"\n\n🏷 {' '.join(meta['tags'])}"
-            
+            post_text += f"\n✍️ Автор: {escape(meta.get('author', '?'))}\n📊 Глав: {escape(str(chapters))}"
+            if is_translator: 
+                post_text += f"\n📌 Статус: <b>{escape(status)}</b>"
+                
+            if meta.get('tags'): post_text += f"\n\n🏷 {' '.join(meta['tags'])}"
             post_text += f"\n\n📖 <b>Описание:</b>\n<blockquote expandable>{escape(meta.get('desc', 'Описание отсутствует'))}</blockquote>"
-            if meta.get('links'): 
-                post_text += f"\n\n🔗 {escape(meta['links'][0])}"
-            
+            if meta.get('links'): post_text += f"\n\n🔗 {escape(meta['links'][0])}"
             post_text += f"\n\n👤 Опубликовал: {escape(author_name)}"
-            cap = f"🤖 Глоссарий: {escape(gl)}\n🤖 Перевод: {escape(tr)}\n🧹 Фильтр: {escape(fl)}"
+            
+            # Формируем подпись к файлу только для переводчиков
+            cap = ""
+            if is_translator:
+                cap = f"🤖 Глоссарий: {escape(data.get('gl', 'Нет'))}\n🤖 Перевод: {escape(data.get('tr', 'Нет'))}\n🧹 Фильтр: {escape(data.get('fl', 'Нет'))}"
 
-            # --- 3. РАССЫЛКА ПО ГРУППАМ ---
             for gid in groups:
                 try:
-                    chat_id = int(gid) if (isinstance(gid, str) and (gid.isdigit() or (gid.startswith('-') and gid[1:].isdigit()))) else gid
-
-                    topic = await bot.create_forum_topic(
-                        chat_id=chat_id, 
-                        name=title_topic, 
-                        icon_color=random.choice([0x6FB9F0, 0xFFD67E, 0xCB86DB, 0x8EEE98, 0xFF93B2, 0xFB6F5F])
-                    )
+                    chat_id = int(gid) if isinstance(gid, str) and (gid.isdigit() or (gid.startswith('-') and gid[1:].isdigit())) else gid
+                    topic = await bot.create_forum_topic(chat_id=chat_id, name=title_topic, icon_color=random.choice([0x6FB9F0, 0xFFD67E, 0xCB86DB, 0x8EEE98, 0xFF93B2, 0xFB6F5F]))
                     thread_id = topic.message_thread_id
 
                     if data.get('cover') and os.path.exists(data['cover']):
                         await bot.send_photo(chat_id, photo=FSInputFile(data['cover']), message_thread_id=thread_id)
                     
                     await bot.send_message(chat_id, post_text, message_thread_id=thread_id, link_preview_options=LinkPreviewOptions(is_disabled=True))
-                    await bot.send_document(chat_id, document=FSInputFile(data['path'], filename=data['name']), caption=cap, message_thread_id=thread_id)
+                    
+                    # Отправляем файл. Если cap пустой, caption не добавится.
+                    await bot.send_document(chat_id, document=FSInputFile(data['path'], filename=data['name']), caption=cap if cap else None, message_thread_id=thread_id)
                     
                     for item in data.get('extras', []):
                         await bot.send_document(chat_id, document=FSInputFile(item['path'], filename=item['name']), message_thread_id=thread_id)
@@ -502,32 +629,25 @@ async def callbacks(call: types.CallbackQuery, state: FSMContext):
                 except Exception as e:
                     logging.error(f"Ошибка отправки в группу {gid}: {e}")
             
-            if success_count > 0:
-                await call.message.edit_text(f"✅ Успешно опубликовано в {success_count} групп(ы)!")
-            else:
-                await call.message.edit_text("❌ Не удалось опубликовать ни в одну группу. Проверьте права бота.")
+            if success_count > 0: await call.message.edit_text(f"✅ Успешно опубликовано в {success_count} групп(ы)!")
+            else: await call.message.edit_text("❌ Не удалось опубликовать ни в одну группу.")
                 
         except Exception as e:
             logging.error(f"Критическая ошибка при публикации: {e}")
             await call.answer("❌ Произошла ошибка публикации", show_alert=True)
             
         finally:
-            # --- 4. БЕЗОПАСНАЯ ОЧИСТКА ---
             all_files = [data.get('path'), data.get('cover')] + [i['path'] for i in data.get('extras', [])]
             for p in all_files:
                 if p and os.path.exists(p):
-                    try:
-                        os.remove(p)
-                    except OSError as e:
-                        logging.error(f"Не удалось удалить временный файл {p}: {e}")
+                    try: os.remove(p)
+                    except OSError: pass
             await state.clear()
             return
 
-    # ОБНОВЛЕНИЕ ДАННЫХ (если нажали кнопку смены инструмента)
     await state.update_data(data)
-    await call.message.edit_reply_markup(reply_markup=get_tools_kb(data))
+    await call.message.edit_reply_markup(reply_markup=get_tools_kb(data, is_translator))
     await call.answer()
-
 
 if __name__ == "__main__":
     from aiogram.webhook.aiohttp_server import SimpleRequestHandler, setup_application
