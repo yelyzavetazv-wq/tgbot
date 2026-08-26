@@ -265,15 +265,18 @@ async def ask_for_role(message, state: FSMContext):
     await message.answer("Отлично! Теперь укажите вашу роль в проекте:", reply_markup=kb)
 
 @dp.callback_query(Registration.waiting_for_groups, F.data == "skip_groups")
+@dp.callback_query(Registration.waiting_for_groups, F.data == "skip_groups")
 async def reg_skip_groups(call: types.CallbackQuery, state: FSMContext):
     user = call.from_user
     username = f"@{user.username}" if user.username else user.first_name
+    
+    # При сбросе по умолчанию оставляем только Риф
     await db.update_user_groups(user.id, username, ["-1003960669210"], True)
     
     data = await state.get_data()
     if data.get("is_edit_mode"):
         await state.clear()
-        await call.message.edit_text("✅ Группы по умолчанию успешно установлены!")
+        await call.message.edit_text("✅ Установлена только группа по умолчанию (Риф)!")
     else:
         await state.update_data(groups=["-1003960669210"])
         await ask_for_role(call.message, state)
@@ -285,21 +288,36 @@ async def reg_process_groups(message: types.Message, state: FSMContext):
     user = message.from_user
     username = f"@{user.username}" if user.username else user.first_name
     
-    # Разбиваем введенный текст по запятой и очищаем от пробелов
     raw_groups = [g.strip() for g in message.text.split(',') if g.strip()]
     
     valid_groups = []
     for g in raw_groups:
-        # Проверяем формат: либо начинается с @, либо это числовой ID (может начинаться с минуса)
         if g.startswith('@') or (g.lstrip('-').isdigit()):
             valid_groups.append(g)
         else:
-            # Если пользователь ввел команду (например, /ban) или некорректный текст
             return await message.answer(
                 f"❌ Некорректный формат группы: <code>{escape(g)}</code>.\n"
-                "Группа должна начинаться с символа <code>@</code> или быть числовым ID (например: <code>-100123456</code>).\n"
-                "Пожалуйста, отправьте список групп заново."
+                "Группа должна начинаться с символа <code>@</code> или быть числовым ID."
             )
+            
+    if not valid_groups:
+        return await message.answer("❌ Список групп пуст. Пожалуйста, отправьте корректные данные.")
+
+    # Если пользователь редактирует группы, сохраняем текущий статус группы Риф
+    user_data = await db.get_user(user.id)
+    if user_data and "-1003960669210" in user_data.get('groups', []):
+        valid_groups.append("-1003960669210")
+
+    unique_groups = list(dict.fromkeys(valid_groups))
+    await db.update_user_groups(user.id, username, unique_groups, True)
+    
+    data = await state.get_data()
+    if data.get("is_edit_mode"):
+        await state.clear()
+        await message.answer("✅ Новые группы для рассылки успешно сохранены!")
+    else:
+        await state.update_data(groups=unique_groups)
+        await ask_for_role(message, state)
             
     if not valid_groups:
         return await message.answer("❌ Список групп пуст. Пожалуйста, отправьте корректные данные.")
@@ -465,26 +483,47 @@ async def change_groups(message: types.Message, state: FSMContext):
         return await message.answer("❌ У вас нет доступа к боту.")
         
     current_groups = user_data.get('groups', [])
+    # Проверяем, включена ли группа по умолчанию (Риф)
+    has_default = "-1003960669210" in current_groups
+    default_status_text = "🔴 Отключить группу Риф" if has_default else "🟢 Включить группу Риф"
+    
     kb = InlineKeyboardMarkup(inline_keyboard=[
+        [InlineKeyboardButton(text=default_status_text, callback_data="toggle_default_group")],
         [InlineKeyboardButton(text="Оставить текущие / Отмена", callback_data="cancel_group_change")],
-        [InlineKeyboardButton(text="Сбросить по умолчанию (Риф)", callback_data="skip_groups")]
+        [InlineKeyboardButton(text="Сбросить по умолчанию (только Риф)", callback_data="skip_groups")]
     ])
     
     await state.set_state(Registration.waiting_for_groups)
-    # СЕКРЕТНЫЙ ФЛАГ: указываем, что это режим редактирования, а не регистрация
     await state.update_data(is_edit_mode=True) 
     
+    clean_groups = [g for g in current_groups if g != "-1003960669210"]
+    
     await message.answer(
-        f"📁 <b>Ваши текущие группы:</b>\n<code>{', '.join(current_groups)}</code>\n\n"
-        "👉 Чтобы изменить список, отправьте <b>НОВЫЕ</b> группы через запятую (например: <code>@new_group, -100123456</code>).\n"
-        "⚠️ <i>Внимание: Группа по умолчанию (Риф) добавляется всегда. Ваши старые личные группы будут заменены новыми.</i>",
+        f"📁 <b>Ваши текущие личные группы:</b>\n<code>{', '.join(clean_groups) if clean_groups else 'Нет'}</code>\n"
+        f"📌 <b>Группа по умолчанию (Риф):</b> {'Включена ✅' if has_default else 'Отключена ❌'}\n\n"
+        "👉 Чтобы изменить список личных групп, отправьте их через запятую (например: <code>@new_group, -100123456</code>).\n"
+        "👉 Либо нажмите кнопку выше, чтобы включить/выключить группу «Риф».",
         reply_markup=kb
     )
 
-@dp.callback_query(Registration.waiting_for_groups, F.data == "cancel_group_change")
-async def cancel_group_change(call: types.CallbackQuery, state: FSMContext):
+@dp.callback_query(Registration.waiting_for_groups, F.data == "toggle_default_group")
+async def toggle_default_group(call: types.CallbackQuery, state: FSMContext):
+    user_id = call.from_user.id
+    user_data = await db.get_user(user_id)
+    current_groups = user_data.get('groups', [])
+    
+    if "-1003960669210" in current_groups:
+        current_groups.remove("-1003960669210")
+        status_msg = "🔴 Группа по умолчанию (Риф) отключена."
+    else:
+        current_groups.append("-1003960669210")
+        status_msg = "🟢 Группа по умолчанию (Риф) включена."
+        
+    username = f"@{call.from_user.username}" if call.from_user.username else call.from_user.first_name
+    await db.update_user_groups(user_id, username, current_groups, True)
+    
     await state.clear()
-    await call.message.edit_text("✅ Изменение групп отменено. Оставлен прежний список.")
+    await call.message.edit_text(f"{status_msg}\n✅ Изменения сохранены!")
 
 @dp.message(Command("ban"), IsAdmin())
 async def ban_user(message: types.Message):
