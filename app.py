@@ -592,7 +592,12 @@ async def help_admin(message: types.Message):
         "• <code>/ban @username</code> (или ID) — заблокировать нарушителя (запрещает загрузку книг и использование кнопок).\n"
         "• <code>/unban @username</code> (или ID) — снять блокировку."
     )
-    await message.answer(help_text)
+    # 📌 Создаем клавиатуру с кнопкой
+    kb = InlineKeyboardMarkup(inline_keyboard=[
+        [InlineKeyboardButton(text="📖 Инструкция по EPUB", callback_data="show_epub_guide")]
+    ])
+    # 📌 Передаем reply_markup в ответ
+    await message.answer(help_text, reply_markup=kb)
 
 @dp.message(Command("help"))
 async def help_user(message: types.Message):
@@ -611,7 +616,11 @@ async def help_user(message: types.Message):
         "• Формат ввода: <code>@group_name, -100123456789</code> (через запятую).\n"
         "• <i>Важно:</i> Базовая группа «РиФ» добавляется в рассылку автоматически."
     )
-    await message.answer(help_text)
+    kb = InlineKeyboardMarkup(inline_keyboard=[
+        [InlineKeyboardButton(text="📖 Инструкция по EPUB", callback_data="show_epub_guide")]
+    ])
+    # 📌 Передаем reply_markup в ответ
+    await message.answer(help_text, reply_markup=kb)
 
 @dp.callback_query(F.data == "show_epub_guide")
 async def show_epub_guide(call: types.CallbackQuery):
