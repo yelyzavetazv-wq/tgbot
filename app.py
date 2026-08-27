@@ -522,6 +522,8 @@ async def toggle_default_group(call: types.CallbackQuery, state: FSMContext):
 @dp.message(Command("ban"), IsAdmin())
 async def ban_user(message: types.Message):
     """Блокировка пользователя по ID или Username."""
+    if message.chat.type != "private":
+        return
     args = message.text.split(maxsplit=1)
     if len(args) < 2:
         return await message.answer("❌ Укажите ID или Username.\n👉 Пример: <code>/ban @username</code>")
@@ -550,6 +552,8 @@ async def ban_user(message: types.Message):
 @dp.message(Command("unban"), IsAdmin())
 async def unban_user(message: types.Message):
     """Разблокировка пользователя по ID или Username."""
+    if message.chat.type != "private":
+        return
     args = message.text.split(maxsplit=1)
     if len(args) < 2:
         return await message.answer("❌ Укажите ID или Username.\n👉 Пример: <code>/unban @username</code>")
