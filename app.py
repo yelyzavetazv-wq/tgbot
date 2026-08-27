@@ -654,8 +654,8 @@ async def show_epub_guide(call: types.CallbackQuery):
         "  &lt;dc:publisher&gt;https://wtr-lab.com/...&lt;/dc:publisher&gt;\n"
         "&lt;/metadata&gt;</code>\n\n"
         "<b>2. Проверка обложки и оглавления</b>\n"
-        "• <b>Обложка:</b> Убедитесь в наличии файла <code>titlepage.xhtml</code> с тегом <code>&lt;image xlink:href=&quot;...&quot;&gt;</code> либо файлов <code>.jpg</code>/<code>.png</code>.\n"
-        "• <b>Оглавление (toc.ncx):</b> Бот сканирует файл <code>.ncx</code> и элементы <code>&lt;navPoint&gt;</code> для подсчета глав."
+        "• <b>Обложка (titlepage.xhtml):</b> Убедитесь в наличии файла <code>titlepage.xhtml</code> с тегом <code>&lt;image xlink:href=&quot;...&quot;&gt;</code> либо файлов <code>.jpg</code>/<code>.png</code>.\n"
+        "• <b>Количество глав (toc.ncx):</b> Бот сканирует файл <code>.ncx</code> и элементы <code>&lt;navPoint&gt;</code> для подсчета глав."
     )
     
     await call.message.answer(guide_text, link_preview_options=LinkPreviewOptions(is_disabled=True))
