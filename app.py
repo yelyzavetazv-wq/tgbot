@@ -613,6 +613,51 @@ async def help_user(message: types.Message):
     )
     await message.answer(help_text)
 
+@dp.callback_query(F.data == "show_epub_guide")
+async def show_epub_guide(call: types.CallbackQuery):
+    """Отправляет подробную инструкцию по оформлению EPUB."""
+    if not await db.check_access(call.from_user.id):
+        return await call.answer("❌ У вас нет доступа.", show_alert=True)
+        
+    guide_text = (
+        "<b>📖 Руководство по оформлению EPUB-файлов для бота</b>\n\n"
+        "<blockquote expandable>📌 <b>Важно для авторов и переводчиков:</b> Чтобы бот корректно распознал книгу, распределил главы, вывел обложку и всю необходимую информацию, метаданные файла <code>.epub</code> должны быть заполнены строго по определенным правилам.\n\n"
+        "Вы можете использовать любой удобный для вас способ подготовки файла: графический интерфейс программы <b>Calibre</b> или <b>прямое редактирование</b> файлов внутри архива.</blockquote>\n\n"
+        "<b>Часть 1. Заполнение метаданных в программе Calibre</b>\n\n"
+        "1. <b>Добавление книги:</b> Откройте Calibre, перетащите ваш <code>.epub</code> файл в окно программы, нажмите правой кнопкой мыши и выберите <b>«Изменить метаданные» → «Изменить метаданные отдельно»</b>.\n\n"
+        "2. <b>Название книги (Title):</b>\n"
+        "• В поле <b>«Название»</b> укажите несколько вариантов, разделив их слэшем (<code>/</code>).\n"
+        "• <i>Пример:</i> <code>Название на русском / Название на английском / Название на языке оригинала</code>\n"
+        "• <i>Как понимает бот:</i> Первый элемент до слэша используется как основной заголовок <b>(ВАЖНО: первое название используется как тема для публикации в группе!! Будьте внимательны!!!)</b>, остальные учитываются парсером для альтернативных названий.\n\n"
+        "3. <b>Автор (Author):</b>\n"
+        "• Укажите имя автора в поле <b>«Автор»</b>. Если авторов несколько, разделяйте их запятой.\n\n"
+        "4. <b>Теги / Жанры (Tags):</b>\n"
+        "• В поле <b>«Метки» (Tags)</b> перечислите жанры через запятую (бот превратит их в хештеги).\n"
+        "• <i>Пример:</i> <code>Фэнтези, Романтика, Приключения</code>\n\n"
+        "5. <b>Описание / Аннотация (Comments):</b>\n"
+        "• Введите текст аннотации в поле <b>«Описание»</b> для формирования описания книги.\n\n"
+        "6. <b>Ссылки и Издатель (Publisher):</b>\n"
+        "• В поле <b>«Издатель»</b> укажите ссылку на источник (например, <code>https://wtr-lab.com/en/novel/87844/one-card-in-hand</code>). Бот использует первую ссылку, начинающуюся с <code>http</code>.\n\n"
+        "7. <b>Обложка (Cover):</b>\n"
+        "• Загрузите или выберите обложку в формате JPEG/PNG.\n\n"
+        "<b>Часть 2. Прямое редактирование файлов EPUB</b>\n\n"
+        "<b>1. Редактирование файла <code>content.opf</code></b>\n"
+        "Откройте <code>content.opf</code> (в папке <code>OEBPS</code>) в редакторе и заполните тег <code>&lt;metadata&gt;</code>:\n"
+        "<code>&lt;metadata xmlns:dc=&quot;http://purl.org/dc/elements/1.1/&quot;&gt;\n"
+        "  &lt;dc:title&gt;Название на русском / Название на английском&lt;/dc:title&gt;\n"
+        "  &lt;dc:creator&gt;Имя автора&lt;/dc:creator&gt;\n"
+        "  &lt;dc:subject&gt;Фэнтези&lt;/dc:subject&gt;\n"
+        "  &lt;dc:description&gt;Аннотация...&lt;/dc:description&gt;\n"
+        "  &lt;dc:publisher&gt;https://wtr-lab.com/...&lt;/dc:publisher&gt;\n"
+        "&lt;/metadata&gt;</code>\n\n"
+        "<b>2. Проверка обложки и оглавления</b>\n"
+        "• <b>Обложка:</b> Убедитесь в наличии файла <code>titlepage.xhtml</code> с тегом <code>&lt;image xlink:href=&quot;...&quot;&gt;</code> либо файлов <code>.jpg</code>/<code>.png</code>.\n"
+        "• <b>Оглавление (toc.ncx):</b> Бот сканирует файл <code>.ncx</code> и элементы <code>&lt;navPoint&gt;</code> для подсчета глав."
+    )
+    
+    await call.message.answer(guide_text, link_preview_options=LinkPreviewOptions(is_disabled=True))
+    await call.answer()
+
 async def process_batch(message: types.Message, state: FSMContext, user_data: dict):
     """Фоновая задача для обработки накопленного пакета файлов."""
     try:
