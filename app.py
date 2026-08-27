@@ -208,18 +208,12 @@ def count_chapters(epub_path):
     try:
         with zipfile.ZipFile(epub_path, 'r') as z:
             for name in z.namelist():
-                if name.endswith('.ncx'):
+                if name.lower().endswith('.ncx'):
                     with z.open(name) as f:
                         soup = BeautifulSoup(f.read(), 'xml')
                         nav_points = soup.find_all('navPoint')
                         if nav_points:
-                            last_point = nav_points[-1]
-                            text = last_point.find('text').get_text()
-                            numbers = re.findall(r'\d+', text)
-                            if numbers:
-                                return numbers[-1]
-                            else:
-                                return len(nav_points)
+                            return len(nav_points)
     except Exception as e:
         logging.error(f"Ошибка подсчета: {e}")
     return "?"
